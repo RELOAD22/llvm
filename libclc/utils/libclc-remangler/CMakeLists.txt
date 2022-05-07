@@ -2,7 +2,10 @@
 set(LLVM_LINK_COMPONENTS
   BitWriter
   BitReader
+  Core
+  Demangle
   Support
+  TransformUtils
   )
 
 add_clang_tool(libclc-remangler LibclcRemangler.cpp)

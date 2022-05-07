@@ -95,6 +95,7 @@ public:
   bool isTypeSampler() const;
   bool isTypeStruct() const;
   bool isTypeVector() const;
+  bool isTypeJointMatrixINTEL() const;
   bool isTypeVectorInt() const;
   bool isTypeVectorFloat() const;
   bool isTypeVectorBool() const;
@@ -273,17 +274,17 @@ private:
 
 class SPIRVTypeForwardPointer : public SPIRVEntryNoId<OpTypeForwardPointer> {
 public:
-  SPIRVTypeForwardPointer(SPIRVModule *M, SPIRVTypePointer *Pointer,
+  SPIRVTypeForwardPointer(SPIRVModule *M, SPIRVId PointerId,
                           SPIRVStorageClassKind SC)
-      : SPIRVEntryNoId(M, 3), Pointer(Pointer), SC(SC) {}
+      : SPIRVEntryNoId(M, 3), PointerId(PointerId), SC(SC) {}
 
   SPIRVTypeForwardPointer()
-      : Pointer(nullptr), SC(StorageClassUniformConstant) {}
+      : PointerId(SPIRVID_INVALID), SC(StorageClassUniformConstant) {}
 
-  SPIRVTypePointer *getPointer() const { return Pointer; }
+  SPIRVId getPointerId() const { return PointerId; }
   _SPIRV_DCL_ENCDEC
 private:
-  SPIRVTypePointer *Pointer;
+  SPIRVId PointerId;
   SPIRVStorageClassKind SC;
 };
 
@@ -1055,6 +1056,37 @@ public:
 
 protected:
   _SPIRV_DEF_ENCDEC1(Id)
+};
+
+class SPIRVTypeJointMatrixINTEL : public SPIRVType {
+  SPIRVType *CompType;
+  std::vector<SPIRVValue *> Args;
+
+public:
+  const static Op OC = internal::OpTypeJointMatrixINTEL;
+  const static SPIRVWord FixedWC = 3;
+  // Complete constructor
+  SPIRVTypeJointMatrixINTEL(SPIRVModule *M, SPIRVId TheId, SPIRVType *CompType,
+                            std::vector<SPIRVValue *> Args);
+  // Incomplete constructor
+  SPIRVTypeJointMatrixINTEL();
+  _SPIRV_DCL_ENCDEC
+  llvm::Optional<ExtensionID> getRequiredExtension() const override {
+    return ExtensionID::SPV_INTEL_joint_matrix;
+  }
+  SPIRVCapVec getRequiredCapability() const override {
+    return {internal::CapabilityJointMatrixINTEL};
+  }
+  void setWordCount(SPIRVWord WordCount) override {
+    SPIRVType::setWordCount(WordCount);
+    Args.resize(WordCount - FixedWC);
+  }
+  SPIRVType *getCompType() const { return CompType; }
+  SPIRVValue *getRows() const { return Args[0]; }
+  SPIRVValue *getColumns() const { return Args[1]; }
+  SPIRVValue *getLayout() const { return Args[2]; }
+  SPIRVValue *getScope() const { return Args[3]; }
+  SPIRVValue *getUse() const { return Args.size() > 4 ? Args[4] : nullptr; }
 };
 
 } // namespace SPIRV

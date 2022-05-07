@@ -13,6 +13,19 @@
 #include <CL/sycl/buffer.hpp>
 #include <CL/sycl/context.hpp>
 #include <CL/sycl/detail/backend_traits.hpp>
+#include <CL/sycl/feature_test.hpp>
+#if SYCL_BACKEND_OPENCL
+#include <CL/sycl/detail/backend_traits_opencl.hpp>
+#endif
+#if SYCL_EXT_ONEAPI_BACKEND_CUDA
+#include <CL/sycl/detail/backend_traits_cuda.hpp>
+#endif
+#if SYCL_EXT_ONEAPI_BACKEND_HIP
+#include <CL/sycl/detail/backend_traits_hip.hpp>
+#endif
+#if SYCL_EXT_ONEAPI_BACKEND_LEVEL_ZERO
+#include <CL/sycl/detail/backend_traits_level_zero.hpp>
+#endif
 #include <CL/sycl/detail/common.hpp>
 #include <CL/sycl/detail/export.hpp>
 #include <CL/sycl/detail/pi.h>
@@ -30,16 +43,6 @@ __SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
 
 namespace detail {
-template <backend Backend, typename T> struct BackendInput {
-  // TODO replace usage of interop with specializations.
-  using type = typename interop<Backend, T>::type;
-};
-
-template <backend Backend, typename T> struct BackendReturn {
-  // TODO replace usage of interop with specializations.
-  using type = typename interop<Backend, T>::type;
-};
-
 // TODO each backend can have its own custom errc enumeration
 // but the details for this are not fully specified yet
 enum class backend_errc : unsigned int {};
@@ -64,14 +67,125 @@ template <backend Backend, typename SyclType>
 using backend_return_t =
     typename backend_traits<Backend>::template return_type<SyclType>;
 
+namespace detail {
+template <backend Backend, typename DataT, int Dimensions, typename AllocatorT>
+struct BufferInterop {
+  using ReturnType =
+      backend_return_t<Backend, buffer<DataT, Dimensions, AllocatorT>>;
+
+  static ReturnType GetNativeObjs(const std::vector<pi_native_handle> &Handle) {
+    ReturnType ReturnValue = 0;
+    if (Handle.size()) {
+      ReturnValue = detail::pi::cast<ReturnType>(Handle[0]);
+    }
+    return ReturnValue;
+  }
+};
+
+#ifdef SYCL2020_CONFORMANT_APIS
+template <typename DataT, int Dimensions, typename AllocatorT>
+struct BufferInterop<backend::opencl, DataT, Dimensions, AllocatorT> {
+  using ReturnType =
+      backend_return_t<backend::opencl, buffer<DataT, Dimensions, AllocatorT>>;
+
+  static ReturnType GetNativeObjs(const std::vector<pi_native_handle> &Handle) {
+    ReturnType ReturnValue{};
+    for (auto &Obj : Handle) {
+      ReturnValue.push_back(
+          detail::pi::cast<typename decltype(ReturnValue)::value_type>(Obj));
+    }
+    return ReturnValue;
+  }
+};
+#endif
+
+template <backend BackendName, typename DataT, int Dimensions,
+          typename AllocatorT>
+auto get_native_buffer(const buffer<DataT, Dimensions, AllocatorT, void> &Obj)
+    -> backend_return_t<BackendName,
+                        buffer<DataT, Dimensions, AllocatorT, void>> {
+  // No check for backend mismatch because buffer can be allocated on different
+  // backends
+  if (BackendName == backend::ext_oneapi_level_zero)
+    throw sycl::runtime_error(
+        errc::feature_not_supported,
+        "Buffer interop is not supported by level zero yet",
+        PI_INVALID_OPERATION);
+  return Obj.template getNative<BackendName>();
+}
+} // namespace detail
+
 template <backend BackendName, class SyclObjectT>
-auto get_native(const SyclObjectT &Obj) ->
-    typename interop<BackendName, SyclObjectT>::type {
+auto get_native(const SyclObjectT &Obj)
+    -> backend_return_t<BackendName, SyclObjectT> {
   // TODO use SYCL 2020 exception when implemented
-  if (Obj.get_backend() != BackendName)
-    throw runtime_error("Backends mismatch", PI_INVALID_OPERATION);
+  if (Obj.get_backend() != BackendName) {
+    throw sycl::runtime_error(errc::backend_mismatch, "Backends mismatch",
+                              PI_INVALID_OPERATION);
+  }
   return Obj.template get_native<BackendName>();
 }
+
+template <backend BackendName, typename DataT, int Dimensions,
+          typename AllocatorT,
+          std::enable_if_t<BackendName == backend::opencl> * = nullptr>
+#ifndef SYCL2020_CONFORMANT_APIS
+__SYCL_DEPRECATED(
+    "get_native<backend::opencl, buffer>, which return type "
+    "cl_mem is deprecated. According to SYCL 2020 spec, please define "
+    "SYCL2020_CONFORMANT_APIS and use vector<cl_mem> instead.")
+#endif
+auto get_native(const buffer<DataT, Dimensions, AllocatorT> &Obj)
+    -> backend_return_t<BackendName, buffer<DataT, Dimensions, AllocatorT>> {
+  return detail::get_native_buffer<BackendName>(Obj);
+}
+
+template <backend BackendName, typename DataT, int Dimensions,
+          typename AllocatorT,
+          std::enable_if_t<BackendName != backend::opencl> * = nullptr>
+auto get_native(const buffer<DataT, Dimensions, AllocatorT> &Obj)
+    -> backend_return_t<BackendName, buffer<DataT, Dimensions, AllocatorT>> {
+  return detail::get_native_buffer<BackendName>(Obj);
+}
+
+// define SYCL2020_CONFORMANT_APIS to correspond SYCL 2020 spec and return
+// vector<cl_event> from get_native instead of just cl_event
+#ifdef SYCL2020_CONFORMANT_APIS
+template <>
+inline backend_return_t<backend::opencl, event>
+get_native<backend::opencl, event>(const event &Obj) {
+  // TODO use SYCL 2020 exception when implemented
+  if (Obj.get_backend() != backend::opencl) {
+    throw sycl::runtime_error(errc::backend_mismatch, "Backends mismatch",
+                              PI_INVALID_OPERATION);
+  }
+  backend_return_t<backend::opencl, event> ReturnValue;
+  for (auto const &element : Obj.getNativeVector()) {
+    ReturnValue.push_back(
+        reinterpret_cast<
+            typename detail::interop<backend::opencl, event>::value_type>(
+            element));
+  }
+  return ReturnValue;
+}
+#else
+// Specialization for cl_event with deprecation message
+template <>
+__SYCL_DEPRECATED(
+    "get_native<backend::opencl, event>, which return type is "
+    "cl_event is deprecated. According to SYCL 2020 spec, please define "
+    "SYCL2020_CONFORMANT_APIS and use vector<cl_event> instead.")
+inline backend_return_t<backend::opencl, event> get_native<
+    backend::opencl, event>(const event &Obj) {
+  // TODO use SYCL 2020 exception when implemented
+  if (Obj.get_backend() != backend::opencl) {
+    throw sycl::runtime_error(errc::backend_mismatch, "Backends mismatch",
+                              PI_INVALID_OPERATION);
+  }
+  return reinterpret_cast<
+      typename detail::interop<backend::opencl, event>::type>(Obj.getNative());
+}
+#endif
 
 // Native handle of an accessor should be accessed through interop_handler
 template <backend BackendName, typename DataT, int Dimensions,
@@ -79,9 +193,9 @@ template <backend BackendName, typename DataT, int Dimensions,
           access::placeholder IsPlaceholder>
 auto get_native(const accessor<DataT, Dimensions, AccessMode, AccessTarget,
                                IsPlaceholder> &Obj) ->
-    typename interop<BackendName, accessor<DataT, Dimensions, AccessMode,
-                                           AccessTarget, IsPlaceholder>>::type =
-    delete;
+    typename detail::interop<
+        BackendName, accessor<DataT, Dimensions, AccessMode, AccessTarget,
+                              IsPlaceholder>>::type = delete;
 
 namespace detail {
 // Forward declaration
@@ -105,11 +219,20 @@ __SYCL_EXPORT event make_event(pi_native_handle NativeHandle,
 __SYCL_EXPORT event make_event(pi_native_handle NativeHandle,
                                const context &TargetContext, bool KeepOwnership,
                                backend Backend);
+// TODO: Unused. Remove when allowed.
 __SYCL_EXPORT kernel make_kernel(pi_native_handle NativeHandle,
                                  const context &TargetContext, backend Backend);
+__SYCL_EXPORT kernel make_kernel(
+    const context &TargetContext,
+    const kernel_bundle<bundle_state::executable> &KernelBundle,
+    pi_native_handle NativeKernelHandle, bool KeepOwnership, backend Backend);
+// TODO: Unused. Remove when allowed.
 __SYCL_EXPORT std::shared_ptr<detail::kernel_bundle_impl>
 make_kernel_bundle(pi_native_handle NativeHandle, const context &TargetContext,
                    bundle_state State, backend Backend);
+__SYCL_EXPORT std::shared_ptr<detail::kernel_bundle_impl>
+make_kernel_bundle(pi_native_handle NativeHandle, const context &TargetContext,
+                   bool KeepOwnership, bundle_state State, backend Backend);
 } // namespace detail
 
 template <backend Backend>
@@ -145,17 +268,18 @@ make_context(
 }
 
 template <backend Backend>
+__SYCL_DEPRECATED("Use SYCL 2020 sycl::make_queue free function")
 typename std::enable_if<
     detail::InteropFeatureSupportMap<Backend>::MakeQueue == true, queue>::type
-make_queue(const typename backend_traits<Backend>::template input_type<queue>
-               &BackendObject,
-           const context &TargetContext, bool KeepOwnership,
-           const async_handler Handler = {}) {
+    make_queue(
+        const typename backend_traits<Backend>::template input_type<queue>
+            &BackendObject,
+        const context &TargetContext, bool KeepOwnership,
+        const async_handler Handler = {}) {
   return detail::make_queue(detail::pi::cast<pi_native_handle>(BackendObject),
                             TargetContext, KeepOwnership, Handler, Backend);
 }
 
-// TODO: remove this version (without ownership) when allowed to break ABI.
 template <backend Backend>
 typename std::enable_if<
     detail::InteropFeatureSupportMap<Backend>::MakeQueue == true, queue>::type
@@ -177,11 +301,13 @@ make_event(const typename backend_traits<Backend>::template input_type<event>
 }
 
 template <backend Backend>
+__SYCL_DEPRECATED("Use SYCL 2020 sycl::make_event free function")
 typename std::enable_if<
     detail::InteropFeatureSupportMap<Backend>::MakeEvent == true, event>::type
-make_event(const typename backend_traits<Backend>::template input_type<event>
-               &BackendObject,
-           const context &TargetContext, bool KeepOwnership) {
+    make_event(
+        const typename backend_traits<Backend>::template input_type<event>
+            &BackendObject,
+        const context &TargetContext, bool KeepOwnership) {
   return detail::make_event(detail::pi::cast<pi_native_handle>(BackendObject),
                             TargetContext, KeepOwnership, Backend);
 }
@@ -189,13 +315,15 @@ make_event(const typename backend_traits<Backend>::template input_type<event>
 template <backend Backend, typename T, int Dimensions = 1,
           typename AllocatorT = buffer_allocator>
 typename std::enable_if<detail::InteropFeatureSupportMap<Backend>::MakeBuffer ==
-                            true,
+                                true &&
+                            Backend != backend::ext_oneapi_level_zero,
                         buffer<T, Dimensions, AllocatorT>>::type
 make_buffer(const typename backend_traits<Backend>::template input_type<
                 buffer<T, Dimensions, AllocatorT>> &BackendObject,
             const context &TargetContext, event AvailableEvent = {}) {
-  return buffer<T, Dimensions, AllocatorT>(
-      reinterpret_cast<cl_mem>(BackendObject), TargetContext, AvailableEvent);
+  return detail::make_buffer_helper<T, Dimensions, AllocatorT>(
+      detail::pi::cast<pi_native_handle>(BackendObject), TargetContext,
+      AvailableEvent);
 }
 
 template <backend Backend>
@@ -217,7 +345,7 @@ make_kernel_bundle(const typename backend_traits<Backend>::template input_type<
   std::shared_ptr<detail::kernel_bundle_impl> KBImpl =
       detail::make_kernel_bundle(
           detail::pi::cast<pi_native_handle>(BackendObject), TargetContext,
-          State, Backend);
+          false, State, Backend);
   return detail::createSyclObjFromImpl<kernel_bundle<State>>(KBImpl);
 }
 } // namespace sycl

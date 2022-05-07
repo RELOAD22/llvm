@@ -16,8 +16,10 @@ def err_drv_unsupported_opt_with_suggestion : Error<
   "unsupported option '%0'; did you mean '%1'?">;
 def err_drv_unsupported_opt_for_target : Error<
   "unsupported option '%0' for target '%1'">;
+def err_drv_unsupported_opt_for_language_mode : Error<
+  "unsupported option '%0' for language mode '%1'">;
 def err_drv_unsupported_option_argument : Error<
-  "unsupported argument '%1' to option '%0'">;
+  "unsupported argument '%1' to option '-%0'">;
 def err_drv_unknown_stdin_type : Error<
   "-E or -x required when input is from standard input">;
 def err_drv_unknown_stdin_type_clang_cl : Error<
@@ -27,8 +29,9 @@ def err_drv_invalid_arch_name : Error<
   "invalid arch name '%0'">;
 def err_drv_invalid_riscv_arch_name : Error<
   "invalid arch name '%0', %1">;
-def err_drv_invalid_riscv_ext_arch_name : Error<
-  "invalid arch name '%0', %1 '%2'">;
+def warn_drv_invalid_arch_name_with_suggestion : Warning<
+  "ignoring invalid /arch: argument '%0'; for %select{64|32}1-bit expected one of %2">,
+  InGroup<UnusedCommandLineArgument>;
 def warn_drv_avr_mcu_not_specified : Warning<
   "no target microcontroller specified on command line, cannot "
   "link standard libraries, please pass -mmcu=<mcu name>">,
@@ -62,12 +65,20 @@ def err_drv_no_cuda_libdevice : Error<
   "libdevice">;
 
 def err_drv_no_rocm_device_lib : Error<
-  "cannot find ROCm device library%select{| for %1}0; provide its path via "
+  "cannot find ROCm device library%select{| for %1|for ABI version %1}0; provide its path via "
   "'--rocm-path' or '--rocm-device-lib-path', or pass '-nogpulib' to build "
   "without ROCm device library">;
 def err_drv_no_hip_runtime : Error<
   "cannot find HIP runtime; provide its path via '--rocm-path', or pass "
   "'-nogpuinc' to build without HIP runtime">;
+
+def err_drv_no_hipspv_device_lib : Error<
+  "cannot find HIP device library%select{| for %1}0; provide its path via "
+  "'--hip-path' or '--hip-device-lib-path', or pass '-nogpulib' to build "
+  "without HIP device library">;
+def err_drv_hipspv_no_hip_path : Error<
+  "'--hip-path' must be specified when offloading to "
+  "SPIR-V%select{| unless %1 is given}0.">;
 
 def err_drv_undetermined_amdgpu_arch : Error<
   "cannot determine AMDGPU architecture: %0; consider passing it via "
@@ -77,15 +88,17 @@ def err_drv_cuda_version_unsupported : Error<
   "but installation at %3 is %4; use '--cuda-path' to specify a different CUDA "
   "install, pass a different GPU arch with '--cuda-gpu-arch', or pass "
   "'--no-cuda-version-check'">;
-def warn_drv_unknown_cuda_version: Warning<
-  "unknown CUDA version: %0; assuming the latest supported version %1">,
+def warn_drv_new_cuda_version: Warning<
+  "CUDA version%0 is newer than the latest%select{| partially}1 supported version %2">,
+  InGroup<CudaUnknownVersion>;
+def warn_drv_partially_supported_cuda_version: Warning<
+  "CUDA version %0 is only partially supported">,
   InGroup<CudaUnknownVersion>;
 def err_drv_cuda_host_arch : Error<
   "unsupported architecture '%0' for host compilation">;
 def err_drv_no_sycl_libspirv : Error<
-  "cannot find 'libspirv-nvptx64--nvidiacl.bc'; provide path to libspirv "
-  "library via '-fsycl-libspirv-path', or pass '-fno-sycl-libspirv' to build "
-  "without linking with libspirv">;
+  "cannot find '%0'; provide path to libspirv library via '-fsycl-libspirv-path', or "
+  "pass '-fno-sycl-libspirv' to build without linking with libspirv">;
 def err_drv_mix_cuda_hip : Error<
   "mixed CUDA and HIP compilation is not supported">;
 def err_drv_bad_target_id : Error<
@@ -96,6 +109,14 @@ def err_drv_bad_offload_arch_combo : Error<
   "invalid offload arch combinations: '%0' and '%1' (for a specific processor, "
   "a feature should either exist in all offload archs, or not exist in any "
   "offload archs)">;
+def warn_drv_unsupported_option_for_offload_arch_req_feature : Warning<
+  "ignoring '%0' option as it is not currently supported for "
+  "offload arch '%1'. Use it with an offload arch containing '%2' instead">,
+  InGroup<OptionIgnored>;
+def warn_drv_unsupported_option_for_target : Warning<
+  "ignoring '%0' option as it is not currently supported for target '%1'">,
+  InGroup<OptionIgnored>;
+
 def err_drv_invalid_thread_model_for_target : Error<
   "invalid thread model '%0' in '%1' for this target">;
 def err_drv_invalid_linker_name : Error<
@@ -133,6 +154,8 @@ def err_drv_invalid_darwin_version : Error<
   "invalid Darwin version number: %0">;
 def err_drv_invalid_diagnotics_hotness_threshold : Error<
   "invalid argument in '%0', only integer or 'auto' is supported">;
+def err_drv_invalid_diagnotics_misexpect_tolerance : Error<
+  "invalid argument in '%0', only integers are supported">;
 def err_drv_missing_argument : Error<
   "argument to '%0' is missing (expected %1 value%s1)">;
 def err_drv_invalid_Xarch_argument_with_args : Error<
@@ -159,6 +182,8 @@ def err_drv_amdgpu_ieee_without_no_honor_nans : Error<
   "invalid argument '-mno-amdgpu-ieee' only allowed with relaxed NaN handling">;
 def err_drv_argument_not_allowed_with : Error<
   "invalid argument '%0' not allowed with '%1'">;
+def err_drv_cannot_open_randomize_layout_seed_file : Error<
+  "cannot read randomize layout seed file '%0'">;
 def err_drv_invalid_version_number : Error<
   "invalid version number in '%0'">;
 def err_drv_no_linker_llvm_support : Error<
@@ -189,14 +214,20 @@ def err_drv_invalid_mtp : Error<
   "invalid thread pointer reading mode '%0'">;
 def err_drv_missing_arg_mtp : Error<
   "missing argument to '%0'">;
+def warn_drv_missing_plugin_name : Warning<
+  "missing plugin name in %0">,
+  InGroup<InvalidCommandLineArgument>;
+def warn_drv_missing_plugin_arg : Warning<
+  "missing plugin argument for plugin %0 in %1">,
+  InGroup<InvalidCommandLineArgument>;
 def err_drv_invalid_libcxx_deployment : Error<
   "invalid deployment target for -stdlib=libc++ (requires %0 or later)">;
 def err_drv_invalid_argument_to_option : Error<
   "invalid argument '%0' to -%1">;
 def err_drv_malformed_sanitizer_ignorelist : Error<
   "malformed sanitizer ignorelist: '%0'">;
-def err_drv_malformed_sanitizer_coverage_whitelist : Error<
-  "malformed sanitizer coverage whitelist: '%0'">;
+def err_drv_malformed_sanitizer_coverage_allowlist : Error<
+  "malformed sanitizer coverage allowlist: '%0'">;
 def err_drv_malformed_sanitizer_coverage_ignorelist : Error<
   "malformed sanitizer coverage ignorelist: '%0'">;
 def err_drv_duplicate_config : Error<
@@ -254,6 +285,8 @@ def err_drv_cc_print_options_failure : Error<
 def err_drv_lto_without_lld : Error<"LTO requires -fuse-ld=lld">;
 def err_drv_preamble_format : Error<
     "incorrect format for -preamble-bytes=N,END">;
+def err_drv_header_unit_extra_inputs : Error<
+    "multiple inputs are not valid for header units (first extra '%0')">;
 def warn_invalid_ios_deployment_target : Warning<
   "invalid iOS deployment version '%0', iOS 10 is the maximum deployment "
   "target for 32-bit targets">, InGroup<InvalidIOSDeploymentTarget>,
@@ -303,6 +336,8 @@ def err_drv_expecting_fsycl_with_sycl_opt : Error<
   "'%0' must be used in conjunction with '-fsycl' to enable offloading">;
 def err_drv_fsycl_with_c_type : Error<
   "'%0' must not be used in conjunction with '-fsycl', which expects C++ source">;
+def err_drv_fsycl_unsupported_with_opt
+  : Error<"'%0' is not supported with '-fsycl'">;
 def err_drv_sycl_missing_amdgpu_arch : Error<
   "missing AMDGPU architecture for SYCL offloading; specify it with '-Xsycl-target-backend --offload-arch'">;
 def warn_drv_sycl_offload_target_duplicate : Warning<
@@ -323,9 +358,9 @@ def err_drv_unsupported_embed_bitcode
 def err_drv_bitcode_unsupported_on_toolchain : Error<
   "-fembed-bitcode is not supported on versions of iOS prior to 6.0">;
 def err_drv_negative_columns : Error<
-    "invalid value '%1' in '%0', value must be 'none' or a positive integer">;
+  "invalid value '%1' in '%0', value must be 'none' or a positive integer">;
 def err_drv_small_columns : Error<
-    "invalid value '%1' in '%0', value must be '%2' or greater">;
+  "invalid value '%1' in '%0', value must be '%2' or greater">;
 
 def err_drv_invalid_malign_branch_EQ : Error<
   "invalid argument '%0' to -malign-branch=; each element must be one of: %1">;
@@ -364,10 +399,16 @@ def warn_drv_preprocessed_input_file_unused : Warning<
 def warn_drv_unused_argument : Warning<
   "argument unused during compilation: '%0'">,
   InGroup<UnusedCommandLineArgument>;
+def warn_drv_unused_x : Warning<
+  "'-x %0' after last input file has no effect">,
+  InGroup<UnusedCommandLineArgument>;
 def warn_drv_empty_joined_argument : Warning<
   "joined argument expects additional value: '%0'">,
   InGroup<UnusedCommandLineArgument>;
 def warn_drv_diagnostics_hotness_requires_pgo : Warning<
+  "argument '%0' requires profile-guided optimization information">,
+  InGroup<UnusedCommandLineArgument>;
+def warn_drv_diagnostics_misexpect_requires_pgo : Warning<
   "argument '%0' requires profile-guided optimization information">,
   InGroup<UnusedCommandLineArgument>;
 def warn_drv_clang_unsupported : Warning<
@@ -376,6 +417,9 @@ def warn_drv_deprecated_arg : Warning<
   "argument '%0' is deprecated, use '%1' instead">, InGroup<Deprecated>;
 def warn_drv_assuming_mfloat_abi_is : Warning<
   "unknown platform, assuming -mfloat-abi=%0">;
+def warn_drv_unsupported_float_abi_by_lib : Warning<
+  "float ABI '%0' is not supported by current library">,
+  InGroup<DiagGroup<"unsupported-abi">>;
 def warn_ignoring_ftabstop_value : Warning<
   "ignoring invalid -ftabstop value '%0', using default value %1">;
 def warn_drv_overriding_flag_option : Warning<
@@ -408,6 +452,8 @@ def warn_ignoring_verify_debuginfo_preserve_export : Warning<
   InGroup<UnusedCommandLineArgument>;
 def err_invalid_branch_protection: Error <
   "invalid branch protection option '%0' in '%1'">;
+def warn_unsupported_branch_protection: Warning <
+  "invalid branch protection option '%0' in '%1'">, InGroup<BranchProtection>;
 def err_invalid_sls_hardening : Error<
   "invalid sls hardening option '%0' in '%1'">;
 def err_sls_hardening_arm_not_supported : Error<
@@ -436,12 +482,17 @@ def err_analyzer_checker_option_invalid_input : Error<
   "invalid input for checker option '%0', that expects %1">;
 def err_analyzer_checker_incompatible_analyzer_option : Error<
   "checker cannot be enabled with analyzer option '%0' == %1">;
+def err_analyzer_not_built_with_z3 : Error<
+  "analyzer constraint manager 'z3' is only available if LLVM was built with "
+  "-DLLVM_ENABLE_Z3_SOLVER=ON">;
 
-def err_drv_invalid_hvx_length : Error<
-  "-mhvx-length is not supported without a -mhvx/-mhvx= flag">;
-def warn_drv_vectorize_needs_hvx : Warning<
-  "auto-vectorization requires HVX, use -mhvx to enable it">,
+def warn_drv_needs_hvx : Warning<
+  "%0 requires HVX, use -mhvx/-mhvx= to enable it">,
   InGroup<OptionIgnored>;
+def err_drv_needs_hvx : Error<
+  "%0 requires HVX, use -mhvx/-mhvx= to enable it">;
+def err_drv_needs_hvx_version : Error<
+  "%0 is not supported on HVX %1">;
 
 def err_drv_module_header_wrong_kind : Error<
   "header file '%0' input type '%1' does not match type of prior input "
@@ -454,6 +505,10 @@ def err_test_module_file_extension_format : Error<
   "-ftest-module-file-extension argument '%0' is not of the required form "
   "'blockname:major:minor:hashed:user info'">;
 
+def err_drv_extract_api_wrong_kind : Error<
+  "header file '%0' input '%1' does not match the type of prior input "
+  "in api extraction; use '-x %2' to override">;
+
 def warn_slash_u_filename : Warning<"'/U%0' treated as the '/U' option">,
   InGroup<DiagGroup<"slash-u-filename">>;
 def note_use_dashdash : Note<
@@ -465,7 +520,8 @@ def err_drv_ropi_incompatible_with_cxx : Error<
   "ROPI is not compatible with c++">;
 
 def err_stack_tagging_requires_hardware_feature : Error<
-  "'-fsanitize=memtag' requires hardware support (+memtag)">;
+  "'-fsanitize=memtag-stack' requires hardware support (+memtag). For Armv8 or "
+  "Armv9, try compiling with -march=armv8a+memtag or -march=armv9a+memtag">;
 
 def err_cmse_pi_are_incompatible : Error<
   "cmse is not compatible with %select{RWPI|ROPI}0">;
@@ -520,11 +576,10 @@ def warn_drv_ps4_force_pic : Warning<
   "option '%0' was ignored by the PS4 toolchain, using '-fPIC'">,
   InGroup<OptionIgnored>;
 
-def warn_drv_ps4_sdk_dir : Warning<
-  "environment variable SCE_ORBIS_SDK_DIR is set, but points to invalid or nonexistent directory '%0'">,
+def warn_drv_ps_sdk_dir : Warning<
+  "environment variable '%0' is set, but points to invalid or nonexistent directory '%1'">,
   InGroup<InvalidOrNonExistentDirectory>;
 
-def err_drv_unsupported_linker : Error<"unsupported value '%0' for -linker option">;
 def err_drv_defsym_invalid_format : Error<"defsym must be of the form: sym=value: %0">;
 def err_drv_defsym_invalid_symval : Error<"value is not an integer: %0">;
 def warn_drv_msvc_not_found : Warning<
@@ -557,7 +612,7 @@ def warn_drv_moutline_unsupported_opt : Warning<
   InGroup<OptionIgnored>;
 
 def warn_drv_moutline_atomics_unsupported_opt : Warning<
-  "'%0' does not support '-moutline-atomics'; flag ignored">,
+  "'%0' does not support '-%1'; flag ignored">,
   InGroup<OptionIgnored>;
 
 def warn_drv_darwin_sdk_invalid_settings : Warning<
@@ -614,4 +669,33 @@ def err_cc1_round_trip_ok_then_fail : Error<
   "generated arguments parse failed in round-trip">;
 def err_cc1_round_trip_mismatch : Error<
   "generated arguments do not match in round-trip">;
+def err_cc1_unbounded_vscale_min : Error<
+  "minimum vscale must be an unsigned integer greater than 0">;
+
+def err_drv_ssp_missing_offset_argument : Error<
+  "'%0' is used without '-mstack-protector-guard-offset', and there is no default">;
+
+def err_drv_only_one_offload_target_supported : Error<
+  "only one offload target is supported">;
+def err_drv_invalid_or_unsupported_offload_target : Error<
+  "invalid or unsupported offload target: '%0'">;
+def err_drv_cuda_offload_only_emit_bc : Error<
+  "CUDA offload target is supported only along with --emit-llvm">;
+
+def warn_drv_jmc_requires_debuginfo : Warning<
+  "%0 requires debug info. Use %1 or debug options that enable debugger's "
+  "stepping function; option ignored">,
+  InGroup<OptionIgnored>;
+
+def warn_drv_fjmc_for_elf_only : Warning<
+  "-fjmc works only for ELF; option ignored">,
+  InGroup<OptionIgnored>;
+def err_drv_target_variant_invalid : Error<
+  "unsupported '%0' value '%1'; use 'ios-macabi' instead">;
+def warn_drv_fsycl_with_c_type : Warning<
+  "treating '%0' input as '%1' when -fsycl is used">, InGroup<ExpectedFileType>;
+
+def err_drv_invalid_directx_shader_module : Error<
+  "invalid profile : %0">;
+
 }

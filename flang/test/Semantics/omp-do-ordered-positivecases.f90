@@ -1,5 +1,4 @@
-!RUN: %S/test_errors.sh %s %t %flang -fopenmp
-!REQUIRES: shell
+!RUN: %python %S/test_errors.py %s %flang -fopenmp
 ! OpenMP Version 4.5
 ! 2.7.1 Ordered Clause positive cases.
 
@@ -31,7 +30,7 @@ program omp_doordered
     end do
   end do
 
-  !$omp do  ordered(1)
+  !$omp do ordered
   !DEF: /omp_doordered/Block3/i (OmpPrivate, OmpPreDetermined) HostAssoc INTEGER(4)
   do i=1,10
     !$omp ordered
@@ -54,7 +53,7 @@ program omp_doordered
   !$omp end do
 
   !$omp parallel  num_threads(4)
-  !$omp do  ordered(1) collapse(1)
+  !$omp do ordered collapse(1)
   !DEF: /omp_doordered/Block5/Block1/i (OmpPrivate, OmpPreDetermined) HostAssoc INTEGER(4)
   do i=1,10
     !$omp ordered

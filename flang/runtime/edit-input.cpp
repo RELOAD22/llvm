@@ -1,4 +1,4 @@
-//===-- runtime/edit-input.cpp ----------------------------------*- C++ -*-===//
+//===-- runtime/edit-input.cpp --------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,9 +7,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "edit-input.h"
+#include "namelist.h"
+#include "utf.h"
 #include "flang/Common/real.h"
 #include "flang/Common/uint128.h"
 #include <algorithm>
+#include <cfenv>
 
 namespace Fortran::runtime::io {
 
@@ -18,7 +21,7 @@ static bool EditBOZInput(IoStatementState &io, const DataEdit &edit, void *n,
   std::optional<int> remaining;
   std::optional<char32_t> next{io.PrepareInput(edit, remaining)};
   common::UnsignedInt128 value{0};
-  for (; next; next = io.NextInField(remaining)) {
+  for (; next; next = io.NextInField(remaining, edit)) {
     char32_t ch{*next};
     if (ch == ' ' || ch == '\t') {
       continue;
@@ -47,17 +50,24 @@ static bool EditBOZInput(IoStatementState &io, const DataEdit &edit, void *n,
   return true;
 }
 
+static inline char32_t GetDecimalPoint(const DataEdit &edit) {
+  return edit.modes.editingFlags & decimalComma ? char32_t{','} : char32_t{'.'};
+}
+
 // Prepares input from a field, and consumes the sign, if any.
 // Returns true if there's a '-' sign.
 static bool ScanNumericPrefix(IoStatementState &io, const DataEdit &edit,
     std::optional<char32_t> &next, std::optional<int> &remaining) {
-  next = io.PrepareInput(edit, remaining);
+  bool bzMode{(edit.modes.editingFlags & blankZero) != 0};
+  next = io.PrepareInput(edit, remaining, !bzMode);
   bool negative{false};
   if (next) {
     negative = *next == '-';
     if (negative || *next == '+') {
-      io.SkipSpaces(remaining);
-      next = io.NextInField(remaining);
+      if (!bzMode) {
+        io.SkipSpaces(remaining);
+      }
+      next = io.NextInField(remaining, edit);
     }
   }
   return negative;
@@ -68,6 +78,10 @@ bool EditIntegerInput(
   RUNTIME_CHECK(io.GetIoErrorHandler(), kind >= 1 && !(kind & (kind - 1)));
   switch (edit.descriptor) {
   case DataEdit::ListDirected:
+    if (IsNamelistName(io)) {
+      return false;
+    }
+    break;
   case 'G':
   case 'I':
     break;
@@ -77,6 +91,8 @@ bool EditIntegerInput(
     return EditBOZInput(io, edit, n, 8, kind << 3);
   case 'Z':
     return EditBOZInput(io, edit, n, 16, kind << 3);
+  case 'A': // legacy extension
+    return EditCharacterInput(io, edit, reinterpret_cast<char *>(n), kind);
   default:
     io.GetIoErrorHandler().SignalError(IostatErrorInFormat,
         "Data edit descriptor '%c' may not be used with an INTEGER data item",
@@ -86,8 +102,9 @@ bool EditIntegerInput(
   std::optional<int> remaining;
   std::optional<char32_t> next;
   bool negate{ScanNumericPrefix(io, edit, next, remaining)};
-  common::UnsignedInt128 value;
-  for (; next; next = io.NextInField(remaining)) {
+  common::UnsignedInt128 value{0};
+  bool any{negate};
+  for (; next; next = io.NextInField(remaining, edit)) {
     char32_t ch{*next};
     if (ch == ' ' || ch == '\t') {
       if (edit.modes.editingFlags & blankZero) {
@@ -106,12 +123,15 @@ bool EditIntegerInput(
     }
     value *= 10;
     value += digit;
+    any = true;
   }
   if (negate) {
     value = -value;
   }
-  std::memcpy(n, &value, kind);
-  return true;
+  if (any || !io.GetConnectionState().IsAtEOF()) {
+    std::memcpy(n, &value, kind); // a blank field means zero
+  }
+  return any;
 }
 
 // Parses a REAL input number from the input source as a normalized
@@ -136,18 +156,22 @@ static int ScanRealInput(char *buffer, int bufferSize, IoStatementState &io,
   if (ScanNumericPrefix(io, edit, next, remaining)) {
     Put('-');
   }
-  if (!next) { // empty field means zero
-    Put('0');
+  bool bzMode{(edit.modes.editingFlags & blankZero) != 0};
+  if (!next || (!bzMode && *next == ' ')) { // empty/blank field means zero
+    remaining.reset();
+    if (!io.GetConnectionState().IsAtEOF()) {
+      Put('0');
+    }
     return got;
   }
-  char32_t decimal = edit.modes.editingFlags & decimalComma ? ',' : '.';
+  char32_t decimal{GetDecimalPoint(edit)};
   char32_t first{*next >= 'a' && *next <= 'z' ? *next + 'A' - 'a' : *next};
   if (first == 'N' || first == 'I') {
     // NaN or infinity - convert to upper case
     // Subtle: a blank field of digits could be followed by 'E' or 'D',
     for (; next &&
          ((*next >= 'a' && *next <= 'z') || (*next >= 'A' && *next <= 'Z'));
-         next = io.NextInField(remaining)) {
+         next = io.NextInField(remaining, edit)) {
       if (*next >= 'a' && *next <= 'z') {
         Put(*next - 'a' + 'A');
       } else {
@@ -156,16 +180,17 @@ static int ScanRealInput(char *buffer, int bufferSize, IoStatementState &io,
     }
     if (next && *next == '(') { // NaN(...)
       while (next && *next != ')') {
-        next = io.NextInField(remaining);
+        next = io.NextInField(remaining, edit);
       }
     }
     exponent = 0;
   } else if (first == decimal || (first >= '0' && first <= '9') ||
-      first == 'E' || first == 'D' || first == 'Q') {
+      (bzMode && (first == ' ' || first == '\t')) || first == 'E' ||
+      first == 'D' || first == 'Q') {
     Put('.'); // input field is normalized to a fraction
     auto start{got};
-    bool bzMode{(edit.modes.editingFlags & blankZero) != 0};
-    for (; next; next = io.NextInField(remaining)) {
+    bool anyDigit{false};
+    for (; next; next = io.NextInField(remaining, edit)) {
       char32_t ch{*next};
       if (ch == ' ' || ch == '\t') {
         if (bzMode) {
@@ -175,8 +200,10 @@ static int ScanRealInput(char *buffer, int bufferSize, IoStatementState &io,
         }
       }
       if (ch == '0' && got == start && !decimalPoint) {
+        anyDigit = true;
         // omit leading zeroes before the decimal
       } else if (ch >= '0' && ch <= '9') {
+        anyDigit = true;
         Put(ch);
       } else if (ch == decimal && !decimalPoint) {
         // the decimal point is *not* copied to the buffer
@@ -186,7 +213,11 @@ static int ScanRealInput(char *buffer, int bufferSize, IoStatementState &io,
       }
     }
     if (got == start) {
-      Put('0'); // emit at least one digit
+      if (anyDigit) {
+        Put('0'); // emit at least one digit
+      } else {
+        return 0; // no digits, invalid input
+      }
     }
     if (next &&
         (*next == 'e' || *next == 'E' || *next == 'd' || *next == 'D' ||
@@ -194,7 +225,7 @@ static int ScanRealInput(char *buffer, int bufferSize, IoStatementState &io,
       // Optional exponent letter.  Blanks are allowed between the
       // optional exponent letter and the exponent value.
       io.SkipSpaces(remaining);
-      next = io.NextInField(remaining);
+      next = io.NextInField(remaining, edit);
     }
     // The default exponent is -kP, but the scale factor doesn't affect
     // an explicit exponent.
@@ -204,9 +235,9 @@ static int ScanRealInput(char *buffer, int bufferSize, IoStatementState &io,
             (bzMode && (*next == ' ' || *next == '\t')))) {
       bool negExpo{*next == '-'};
       if (negExpo || *next == '+') {
-        next = io.NextInField(remaining);
+        next = io.NextInField(remaining, edit);
       }
-      for (exponent = 0; next; next = io.NextInField(remaining)) {
+      for (exponent = 0; next; next = io.NextInField(remaining, edit)) {
         if (*next >= '0' && *next <= '9') {
           exponent = 10 * exponent + *next - '0';
         } else if (bzMode && (*next == ' ' || *next == '\t')) {
@@ -237,17 +268,18 @@ static int ScanRealInput(char *buffer, int bufferSize, IoStatementState &io,
   // input value.
   if (edit.descriptor == DataEdit::ListDirectedImaginaryPart) {
     if (next && (*next == ' ' || *next == '\t')) {
-      next = io.NextInField(remaining);
+      next = io.NextInField(remaining, edit);
     }
     if (!next) { // NextInField fails on separators like ')'
-      next = io.GetCurrentChar();
+      std::size_t byteCount{0};
+      next = io.GetCurrentChar(byteCount);
       if (next && *next == ')') {
-        io.HandleRelativePosition(1);
+        io.HandleRelativePosition(byteCount);
       }
     }
   } else if (remaining) {
     while (next && (*next == ' ' || *next == '\t')) {
-      next = io.NextInField(remaining);
+      next = io.NextInField(remaining, edit);
     }
     if (next) {
       return 0; // error: unused nonblank character in fixed-width field
@@ -256,9 +288,90 @@ static int ScanRealInput(char *buffer, int bufferSize, IoStatementState &io,
   return got;
 }
 
+static void RaiseFPExceptions(decimal::ConversionResultFlags flags) {
+#undef RAISE
+#ifdef feraisexcept // a macro in some environments; omit std::
+#define RAISE feraiseexcept
+#else
+#define RAISE std::feraiseexcept
+#endif
+  if (flags & decimal::ConversionResultFlags::Overflow) {
+    RAISE(FE_OVERFLOW);
+  }
+  if (flags & decimal::ConversionResultFlags::Inexact) {
+    RAISE(FE_INEXACT);
+  }
+  if (flags & decimal::ConversionResultFlags::Invalid) {
+    RAISE(FE_INVALID);
+  }
+#undef RAISE
+}
+
+// If no special modes are in effect and the form of the input value
+// that's present in the input stream is acceptable to the decimal->binary
+// converter without modification, this fast path for real input
+// saves time by avoiding memory copies and reformatting of the exponent.
+template <int PRECISION>
+static bool TryFastPathRealInput(
+    IoStatementState &io, const DataEdit &edit, void *n) {
+  if (edit.modes.editingFlags & (blankZero | decimalComma)) {
+    return false;
+  }
+  if (edit.modes.scale != 0) {
+    return false;
+  }
+  const char *str{nullptr};
+  std::size_t got{io.GetNextInputBytes(str)};
+  if (got == 0 || str == nullptr ||
+      !io.GetConnectionState().recordLength.has_value()) {
+    return false; // could not access reliably-terminated input stream
+  }
+  const char *p{str};
+  std::int64_t maxConsume{
+      std::min<std::int64_t>(got, edit.width.value_or(got))};
+  const char *limit{str + maxConsume};
+  decimal::ConversionToBinaryResult<PRECISION> converted{
+      decimal::ConvertToBinary<PRECISION>(p, edit.modes.round, limit)};
+  if (converted.flags & decimal::Invalid) {
+    return false;
+  }
+  if (edit.digits.value_or(0) != 0 &&
+      std::memchr(str, '.', p - str) == nullptr) {
+    // No explicit decimal point, and edit descriptor is Fw.d (or other)
+    // with d != 0, which implies scaling.
+    return false;
+  }
+  for (; p < limit && (*p == ' ' || *p == '\t'); ++p) {
+  }
+  if (edit.descriptor == DataEdit::ListDirectedImaginaryPart) {
+    // Need to consume a trailing ')' and any white space after
+    if (p >= limit || *p != ')') {
+      return false;
+    }
+    for (++p; p < limit && (*p == ' ' || *p == '\t'); ++p) {
+    }
+  }
+  if (edit.width && p < str + *edit.width) {
+    return false; // unconverted characters remain in fixed width field
+  }
+  // Success on the fast path!
+  *reinterpret_cast<decimal::BinaryFloatingPointNumber<PRECISION> *>(n) =
+      converted.binary;
+  io.HandleRelativePosition(p - str);
+  // Set FP exception flags
+  if (converted.flags != decimal::ConversionResultFlags::Exact) {
+    RaiseFPExceptions(converted.flags);
+  }
+  return true;
+}
+
 template <int KIND>
 bool EditCommonRealInput(IoStatementState &io, const DataEdit &edit, void *n) {
   constexpr int binaryPrecision{common::PrecisionOfRealKind(KIND)};
+  if (TryFastPathRealInput<binaryPrecision>(io, edit, n)) {
+    return true;
+  }
+  // Fast path wasn't available or didn't work; go the more general route
   static constexpr int maxDigits{
       common::MaxDecimalConversionDigits(binaryPrecision)};
   static constexpr int bufferSize{maxDigits + 18};
@@ -270,12 +383,43 @@ bool EditCommonRealInput(IoStatementState &io, const DataEdit &edit, void *n) {
     return false;
   }
   if (got == 0) {
-    io.GetIoErrorHandler().SignalError("Bad REAL input value");
+    io.GetIoErrorHandler().SignalError(IostatBadRealInput);
     return false;
   }
   bool hadExtra{got > maxDigits};
   if (exponent != 0) {
-    got += std::snprintf(&buffer[got], bufferSize - got, "e%d", exponent);
+    buffer[got++] = 'e';
+    if (exponent < 0) {
+      buffer[got++] = '-';
+      exponent = -exponent;
+    }
+    if (exponent > 9999) {
+      exponent = 9999; // will convert to +/-Inf
+    }
+    if (exponent > 999) {
+      int dig{exponent / 1000};
+      buffer[got++] = '0' + dig;
+      int rest{exponent - 1000 * dig};
+      dig = rest / 100;
+      buffer[got++] = '0' + dig;
+      rest -= 100 * dig;
+      dig = rest / 10;
+      buffer[got++] = '0' + dig;
+      buffer[got++] = '0' + (rest - 10 * dig);
+    } else if (exponent > 99) {
+      int dig{exponent / 100};
+      buffer[got++] = '0' + dig;
+      int rest{exponent - 100 * dig};
+      dig = rest / 10;
+      buffer[got++] = '0' + dig;
+      buffer[got++] = '0' + (rest - 10 * dig);
+    } else if (exponent > 9) {
+      int dig{exponent / 10};
+      buffer[got++] = '0' + dig;
+      buffer[got++] = '0' + (exponent - 10 * dig);
+    } else {
+      buffer[got++] = '0' + exponent;
+    }
   }
   buffer[got] = '\0';
   const char *p{buffer};
@@ -285,9 +429,12 @@ bool EditCommonRealInput(IoStatementState &io, const DataEdit &edit, void *n) {
     converted.flags = static_cast<enum decimal::ConversionResultFlags>(
         converted.flags | decimal::Inexact);
   }
-  // TODO: raise converted.flags as exceptions?
   *reinterpret_cast<decimal::BinaryFloatingPointNumber<binaryPrecision> *>(n) =
       converted.binary;
+  // Set FP exception flags
+  if (converted.flags != decimal::ConversionResultFlags::Exact) {
+    RaiseFPExceptions(converted.flags);
+  }
   return true;
 }
 
@@ -296,6 +443,10 @@ bool EditRealInput(IoStatementState &io, const DataEdit &edit, void *n) {
   constexpr int binaryPrecision{common::PrecisionOfRealKind(KIND)};
   switch (edit.descriptor) {
   case DataEdit::ListDirected:
+    if (IsNamelistName(io)) {
+      return false;
+    }
+    return EditCommonRealInput<KIND>(io, edit, n);
   case DataEdit::ListDirectedRealPart:
   case DataEdit::ListDirectedImaginaryPart:
   case 'F':
@@ -312,6 +463,8 @@ bool EditRealInput(IoStatementState &io, const DataEdit &edit, void *n) {
   case 'Z':
     return EditBOZInput(
         io, edit, n, 16, common::BitsForBinaryPrecision(binaryPrecision));
+  case 'A': // legacy extension
+    return EditCharacterInput(io, edit, reinterpret_cast<char *>(n), KIND);
   default:
     io.GetIoErrorHandler().SignalError(IostatErrorInFormat,
         "Data edit descriptor '%c' may not be used for REAL input",
@@ -324,6 +477,10 @@ bool EditRealInput(IoStatementState &io, const DataEdit &edit, void *n) {
 bool EditLogicalInput(IoStatementState &io, const DataEdit &edit, bool &x) {
   switch (edit.descriptor) {
   case DataEdit::ListDirected:
+    if (IsNamelistName(io)) {
+      return false;
+    }
+    break;
   case 'L':
   case 'G':
     break;
@@ -336,7 +493,7 @@ bool EditLogicalInput(IoStatementState &io, const DataEdit &edit, bool &x) {
   std::optional<int> remaining;
   std::optional<char32_t> next{io.PrepareInput(edit, remaining)};
   if (next && *next == '.') { // skip optional period
-    next = io.NextInField(remaining);
+    next = io.NextInField(remaining, edit);
   }
   if (!next) {
     io.GetIoErrorHandler().SignalError("Empty LOGICAL input field");
@@ -359,18 +516,20 @@ bool EditLogicalInput(IoStatementState &io, const DataEdit &edit, bool &x) {
   if (remaining) { // ignore the rest of the field
     io.HandleRelativePosition(*remaining);
   } else if (edit.descriptor == DataEdit::ListDirected) {
-    while (io.NextInField(remaining)) { // discard rest of field
+    while (io.NextInField(remaining, edit)) { // discard rest of field
     }
   }
   return true;
 }
 
 // See 13.10.3.1 paragraphs 7-9 in Fortran 2018
+template <typename CHAR>
 static bool EditDelimitedCharacterInput(
-    IoStatementState &io, char *x, std::size_t length, char32_t delimiter) {
+    IoStatementState &io, CHAR *x, std::size_t length, char32_t delimiter) {
   bool result{true};
   while (true) {
-    auto ch{io.GetCurrentChar()};
+    std::size_t byteCount{0};
+    auto ch{io.GetCurrentChar(byteCount)};
     if (!ch) {
       if (io.AdvanceRecord()) {
         continue;
@@ -379,12 +538,12 @@ static bool EditDelimitedCharacterInput(
         break;
       }
     }
-    io.HandleRelativePosition(1);
+    io.HandleRelativePosition(byteCount);
     if (*ch == delimiter) {
-      auto next{io.GetCurrentChar()};
+      auto next{io.GetCurrentChar(byteCount)};
       if (next && *next == delimiter) {
         // Repeated delimiter: use as character value
-        io.HandleRelativePosition(1);
+        io.HandleRelativePosition(byteCount);
       } else {
         break; // closing delimiter
       }
@@ -398,18 +557,24 @@ static bool EditDelimitedCharacterInput(
   return result;
 }
 
-static bool EditListDirectedDefaultCharacterInput(
-    IoStatementState &io, char *x, std::size_t length) {
-  auto ch{io.GetCurrentChar()};
+template <typename CHAR>
+static bool EditListDirectedCharacterInput(
+    IoStatementState &io, CHAR *x, std::size_t length, const DataEdit &edit) {
+  std::size_t byteCount{0};
+  auto ch{io.GetCurrentChar(byteCount)};
   if (ch && (*ch == '\'' || *ch == '"')) {
-    io.HandleRelativePosition(1);
+    io.HandleRelativePosition(byteCount);
     return EditDelimitedCharacterInput(io, x, length, *ch);
   }
+  if (IsNamelistName(io) || io.GetConnectionState().IsAtEOF()) {
+    return false;
+  }
   // Undelimited list-directed character input: stop at a value separator
-  // or the end of the current record.
-  std::optional<int> remaining{length};
-  for (std::optional<char32_t> next{io.NextInField(remaining)}; next;
-       next = io.NextInField(remaining)) {
+  // or the end of the current record.  Subtlety: the "remaining" count
+  // here is a dummy that's used to avoid the interpretation of separators
+  // in NextInField.
+  std::optional<int> remaining{maxUTF8Bytes};
+  while (std::optional<char32_t> next{io.NextInField(remaining, edit)}) {
     switch (*next) {
     case ' ':
     case '\t':
@@ -421,17 +586,19 @@ static bool EditListDirectedDefaultCharacterInput(
     default:
       *x++ = *next;
       --length;
+      remaining = maxUTF8Bytes;
     }
   }
   std::fill_n(x, length, ' ');
   return true;
 }
 
-bool EditDefaultCharacterInput(
-    IoStatementState &io, const DataEdit &edit, char *x, std::size_t length) {
+template <typename CHAR>
+bool EditCharacterInput(
+    IoStatementState &io, const DataEdit &edit, CHAR *x, std::size_t length) {
   switch (edit.descriptor) {
   case DataEdit::ListDirected:
-    return EditListDirectedDefaultCharacterInput(io, x, length);
+    return EditListDirectedCharacterInput(io, x, length, edit);
   case 'A':
   case 'G':
     break;
@@ -441,24 +608,70 @@ bool EditDefaultCharacterInput(
         edit.descriptor);
     return false;
   }
-  std::optional<int> remaining{length};
+  const ConnectionState &connection{io.GetConnectionState()};
+  if (connection.IsAtEOF()) {
+    return false;
+  }
+  std::size_t remaining{length};
   if (edit.width && *edit.width > 0) {
     remaining = *edit.width;
   }
   // When the field is wider than the variable, we drop the leading
   // characters.  When the variable is wider than the field, there's
   // trailing padding.
-  std::int64_t skip{*remaining - static_cast<std::int64_t>(length)};
-  for (std::optional<char32_t> next{io.NextInField(remaining)}; next;
-       next = io.NextInField(remaining)) {
-    if (skip > 0) {
-      --skip;
-    } else {
-      *x++ = *next;
-      --length;
+  const char *input{nullptr};
+  std::size_t ready{0};
+  bool hitEnd{false};
+  // Skip leading bytes.
+  // These bytes don't count towards INQUIRE(IOLENGTH=).
+  std::size_t skip{remaining > length ? remaining - length : 0};
+  // Transfer payload bytes; these do count.
+  while (remaining > 0) {
+    if (ready == 0) {
+      ready = io.GetNextInputBytes(input);
+      if (ready == 0) {
+        hitEnd = true;
+        break;
+      }
     }
+    std::size_t chunk;
+    bool skipping{skip > 0};
+    if (connection.isUTF8) {
+      chunk = MeasureUTF8Bytes(*input);
+      if (skipping) {
+        --skip;
+      } else if (auto ucs{DecodeUTF8(input)}) {
+        *x++ = *ucs;
+        --length;
+      } else if (chunk == 0) {
+        // error recovery: skip bad encoding
+        chunk = 1;
+      }
+      --remaining;
+    } else {
+      if (skipping) {
+        chunk = std::min<std::size_t>(skip, ready);
+        skip -= chunk;
+      } else {
+        chunk = std::min<std::size_t>(remaining, ready);
+        std::memcpy(x, input, chunk);
+        x += chunk;
+        length -= chunk;
+      }
+      remaining -= chunk;
+    }
+    input += chunk;
+    if (!skipping) {
+      io.GotChar(chunk);
+    }
+    io.HandleRelativePosition(chunk);
+    ready -= chunk;
   }
+  // Pad the remainder of the input variable, if any.
   std::fill_n(x, length, ' ');
+  if (hitEnd) {
+    io.CheckForEndOfRecord(); // signal any needed error
+  }
   return true;
 }
 
@@ -469,4 +682,12 @@ template bool EditRealInput<8>(IoStatementState &, const DataEdit &, void *);
 template bool EditRealInput<10>(IoStatementState &, const DataEdit &, void *);
 // TODO: double/double
 template bool EditRealInput<16>(IoStatementState &, const DataEdit &, void *);
+
+template bool EditCharacterInput(
+    IoStatementState &, const DataEdit &, char *, std::size_t);
+template bool EditCharacterInput(
+    IoStatementState &, const DataEdit &, char16_t *, std::size_t);
+template bool EditCharacterInput(
+    IoStatementState &, const DataEdit &, char32_t *, std::size_t);
+
 } // namespace Fortran::runtime::io

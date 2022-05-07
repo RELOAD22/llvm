@@ -325,7 +325,7 @@ void WalkAST::checkLoopConditionForFloat(const ForStmt *FS) {
   llvm::raw_svector_ostream os(sbuf);
 
   os << "Variable '" << drCond->getDecl()->getName()
-     << "' with floating point type '" << drCond->getType().getAsString()
+     << "' with floating point type '" << drCond->getType()
      << "' should not be used as a loop counter";
 
   ranges.push_back(drCond->getSourceRange());
@@ -785,9 +785,8 @@ void WalkAST::checkDeprecatedOrUnsafeBufferHandling(const CallExpr *CE,
     // real flow analysis.
     auto FormatString =
         dyn_cast<StringLiteral>(CE->getArg(ArgIndex)->IgnoreParenImpCasts());
-    if (FormatString &&
-        FormatString->getString().find("%s") == StringRef::npos &&
-        FormatString->getString().find("%[") == StringRef::npos)
+    if (FormatString && !FormatString->getString().contains("%s") &&
+        !FormatString->getString().contains("%["))
       BoundsProvided = true;
   }
 

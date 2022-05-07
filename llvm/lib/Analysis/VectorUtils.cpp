@@ -331,6 +331,12 @@ Value *llvm::findScalarElement(Value *V, unsigned EltNo) {
       if (Elt->isNullValue())
         return findScalarElement(Val, EltNo);
 
+  // If the vector is a splat then we can trivially find the scalar element.
+  if (isa<ScalableVectorType>(VTy))
+    if (Value *Splat = getSplatValue(V))
+      if (EltNo < VTy->getElementCount().getKnownMinValue())
+        return Splat;
+
   // Otherwise, we don't know.
   return nullptr;
 }
@@ -488,6 +494,116 @@ bool llvm::widenShuffleMaskElts(int Scale, ArrayRef<int> Mask,
   // All elements of the original mask can be scaled down to map to the elements
   // of a mask with wider elements.
   return true;
+}
+
+void llvm::processShuffleMasks(
+    ArrayRef<int> Mask, unsigned NumOfSrcRegs, unsigned NumOfDestRegs,
+    unsigned NumOfUsedRegs, function_ref<void()> NoInputAction,
+    function_ref<void(ArrayRef<int>, unsigned)> SingleInputAction,
+    function_ref<void(ArrayRef<int>, unsigned, unsigned)> ManyInputsAction) {
+  SmallVector<SmallVector<SmallVector<int>>> Res(NumOfDestRegs);
+  // Try to perform better estimation of the permutation.
+  // 1. Split the source/destination vectors into real registers.
+  // 2. Do the mask analysis to identify which real registers are
+  // permuted.
+  int Sz = Mask.size();
+  unsigned SzDest = Sz / NumOfDestRegs;
+  unsigned SzSrc = Sz / NumOfSrcRegs;
+  for (unsigned I = 0; I < NumOfDestRegs; ++I) {
+    auto &RegMasks = Res[I];
+    RegMasks.assign(NumOfSrcRegs, {});
+    // Check that the values in dest registers are in the one src
+    // register.
+    for (unsigned K = 0; K < SzDest; ++K) {
+      int Idx = I * SzDest + K;
+      if (Idx == Sz)
+        break;
+      if (Mask[Idx] >= Sz || Mask[Idx] == UndefMaskElem)
+        continue;
+      int SrcRegIdx = Mask[Idx] / SzSrc;
+      // Add a cost of PermuteTwoSrc for each new source register permute,
+      // if we have more than one source registers.
+      if (RegMasks[SrcRegIdx].empty())
+        RegMasks[SrcRegIdx].assign(SzDest, UndefMaskElem);
+      RegMasks[SrcRegIdx][K] = Mask[Idx] % SzSrc;
+    }
+  }
+  // Process split mask.
+  for (unsigned I = 0; I < NumOfUsedRegs; ++I) {
+    auto &Dest = Res[I];
+    int NumSrcRegs =
+        count_if(Dest, [](ArrayRef<int> Mask) { return !Mask.empty(); });
+    switch (NumSrcRegs) {
+    case 0:
+      // No input vectors were used!
+      NoInputAction();
+      break;
+    case 1: {
+      // Find the only mask with at least single undef mask elem.
+      auto *It =
+          find_if(Dest, [](ArrayRef<int> Mask) { return !Mask.empty(); });
+      unsigned SrcReg = std::distance(Dest.begin(), It);
+      SingleInputAction(*It, SrcReg);
+      break;
+    }
+    default: {
+      // The first mask is a permutation of a single register. Since we have >2
+      // input registers to shuffle, we merge the masks for 2 first registers
+      // and generate a shuffle of 2 registers rather than the reordering of the
+      // first register and then shuffle with the second register. Next,
+      // generate the shuffles of the resulting register + the remaining
+      // registers from the list.
+      auto &&CombineMasks = [](MutableArrayRef<int> FirstMask,
+                               ArrayRef<int> SecondMask) {
+        for (int Idx = 0, VF = FirstMask.size(); Idx < VF; ++Idx) {
+          if (SecondMask[Idx] != UndefMaskElem) {
+            assert(FirstMask[Idx] == UndefMaskElem &&
+                   "Expected undefined mask element.");
+            FirstMask[Idx] = SecondMask[Idx] + VF;
+          }
+        }
+      };
+      auto &&NormalizeMask = [](MutableArrayRef<int> Mask) {
+        for (int Idx = 0, VF = Mask.size(); Idx < VF; ++Idx) {
+          if (Mask[Idx] != UndefMaskElem)
+            Mask[Idx] = Idx;
+        }
+      };
+      int SecondIdx;
+      do {
+        int FirstIdx = -1;
+        SecondIdx = -1;
+        MutableArrayRef<int> FirstMask, SecondMask;
+        for (unsigned I = 0; I < NumOfDestRegs; ++I) {
+          SmallVectorImpl<int> &RegMask = Dest[I];
+          if (RegMask.empty())
+            continue;
+
+          if (FirstIdx == SecondIdx) {
+            FirstIdx = I;
+            FirstMask = RegMask;
+            continue;
+          }
+          SecondIdx = I;
+          SecondMask = RegMask;
+          CombineMasks(FirstMask, SecondMask);
+          ManyInputsAction(FirstMask, FirstIdx, SecondIdx);
+          NormalizeMask(FirstMask);
+          RegMask.clear();
+          SecondMask = FirstMask;
+          SecondIdx = FirstIdx;
+        }
+        if (FirstIdx != SecondIdx && SecondIdx >= 0) {
+          CombineMasks(SecondMask, FirstMask);
+          ManyInputsAction(SecondMask, SecondIdx, FirstIdx);
+          Dest[FirstIdx].clear();
+          NormalizeMask(SecondMask);
+        }
+      } while (SecondIdx >= 0);
+      break;
+    }
+    }
+  }
 }
 
 MapVector<Instruction *, uint64_t>
@@ -824,6 +940,23 @@ llvm::SmallVector<int, 16> llvm::createSequentialMask(unsigned Start,
   return Mask;
 }
 
+llvm::SmallVector<int, 16> llvm::createUnaryMask(ArrayRef<int> Mask,
+                                                 unsigned NumElts) {
+  // Avoid casts in the loop and make sure we have a reasonable number.
+  int NumEltsSigned = NumElts;
+  assert(NumEltsSigned > 0 && "Expected smaller or non-zero element count");
+
+  // If the mask chooses an element from operand 1, reduce it to choose from the
+  // corresponding element of operand 0. Undef mask elements are unchanged.
+  SmallVector<int, 16> UnaryMask;
+  for (int MaskElt : Mask) {
+    assert((MaskElt < NumEltsSigned * 2) && "Expected valid shuffle mask");
+    int UnaryElt = MaskElt >= NumEltsSigned ? MaskElt - NumEltsSigned : MaskElt;
+    UnaryMask.push_back(UnaryElt);
+  }
+  return UnaryMask;
+}
+
 /// A helper function for concatenating vectors. This function concatenates two
 /// vectors having the same element type. If the second vector has fewer
 /// elements than the first, it is padded with undefs.
@@ -940,7 +1073,7 @@ APInt llvm::possiblyDemandedEltsInMask(Value *Mask) {
 
   const unsigned VWidth =
       cast<FixedVectorType>(Mask->getType())->getNumElements();
-  APInt DemandedElts = APInt::getAllOnesValue(VWidth);
+  APInt DemandedElts = APInt::getAllOnes(VWidth);
   if (auto *CV = dyn_cast<ConstantVector>(Mask))
     for (unsigned i = 0; i < VWidth; i++)
       if (CV->getAggregateElement(i)->isNullValue())
@@ -980,7 +1113,7 @@ void InterleavedAccessInfo::collectConstStrideAccesses(
       // wrap around the address space we would do a memory access at nullptr
       // even without the transformation. The wrapping checks are therefore
       // deferred until after we've formed the interleaved groups.
-      int64_t Stride = getPtrStride(PSE, Ptr, TheLoop, Strides,
+      int64_t Stride = getPtrStride(PSE, ElementTy, Ptr, TheLoop, Strides,
                                     /*Assume=*/true, /*ShouldCheckWrap=*/false);
 
       const SCEV *Scev = replaceSymbolicStrideSCEV(PSE, Strides, Ptr);
@@ -1199,8 +1332,9 @@ void InterleavedAccessInfo::analyzeInterleaving(
     Instruction *Member = Group->getMember(Index);
     assert(Member && "Group member does not exist");
     Value *MemberPtr = getLoadStorePointerOperand(Member);
-    if (getPtrStride(PSE, MemberPtr, TheLoop, Strides, /*Assume=*/false,
-                     /*ShouldCheckWrap=*/true))
+    Type *AccessTy = getLoadStoreType(Member);
+    if (getPtrStride(PSE, AccessTy, MemberPtr, TheLoop, Strides,
+                     /*Assume=*/false, /*ShouldCheckWrap=*/true))
       return false;
     LLVM_DEBUG(dbgs() << "LV: Invalidate candidate interleaved group due to "
                       << FirstOrLast
@@ -1352,9 +1486,7 @@ std::string VFABI::mangleTLIVectorName(StringRef VectorName,
 
 void VFABI::getVectorVariantNames(
     const CallInst &CI, SmallVectorImpl<std::string> &VariantMappings) {
-  const StringRef S =
-      CI.getAttribute(AttributeList::FunctionIndex, VFABI::MappingsAttrName)
-          .getValueAsString();
+  const StringRef S = CI.getFnAttr(VFABI::MappingsAttrName).getValueAsString();
   if (S.empty())
     return;
 

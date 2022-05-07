@@ -78,18 +78,6 @@ struct GCOVOptions {
 ModulePass *createGCOVProfilerPass(const GCOVOptions &Options =
                                    GCOVOptions::getDefault());
 
-// PGO Instrumention. Parameter IsCS indicates if this is the context senstive
-// instrumentation.
-ModulePass *createPGOInstrumentationGenLegacyPass(bool IsCS = false);
-ModulePass *
-createPGOInstrumentationUseLegacyPass(StringRef Filename = StringRef(""),
-                                      bool IsCS = false);
-ModulePass *createPGOInstrumentationGenCreateVarLegacyPass(
-    StringRef CSInstrName = StringRef(""));
-ModulePass *createPGOIndirectCallPromotionLegacyPass(bool InLTO = false,
-                                                     bool SamplePGO = false);
-FunctionPass *createPGOMemOPSizeOptLegacyPass();
-
 ModulePass *createCGProfileLegacyPass();
 
 // The pgo-specific indirect call promotion function declared below is used by
@@ -138,7 +126,7 @@ struct InstrProfOptions {
 };
 
 /// Insert frontend instrumentation based profiling. Parameter IsCS indicates if
-// this is the context senstive instrumentation.
+// this is the context sensitive instrumentation.
 ModulePass *createInstrProfilingLegacyPass(
     const InstrProfOptions &Options = InstrProfOptions(), bool IsCS = false);
 
@@ -169,6 +157,8 @@ struct SanitizerCoverageOptions {
   bool PCTable = false;
   bool NoPrune = false;
   bool StackDepth = false;
+  bool TraceLoads = false;
+  bool TraceStores = false;
 
   SanitizerCoverageOptions() = default;
 };

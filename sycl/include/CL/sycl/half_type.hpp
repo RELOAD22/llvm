@@ -12,9 +12,6 @@
 #include <CL/sycl/detail/export.hpp>
 #include <CL/sycl/detail/type_traits.hpp>
 
-#include <array>
-#include <cmath>
-#include <cstdint>
 #include <functional>
 #include <iostream>
 #include <limits>
@@ -35,6 +32,17 @@
 
 __SYCL_INLINE_NAMESPACE(cl) {
 namespace sycl {
+
+namespace ext {
+namespace intel {
+namespace esimd {
+namespace detail {
+class WrapperElementTypeProxy;
+} // namespace detail
+} // namespace esimd
+} // namespace intel
+} // namespace ext
+
 namespace detail {
 
 inline __SYCL_CONSTEXPR_HALF uint16_t float2Half(const float &Val) {
@@ -48,7 +56,7 @@ inline __SYCL_CONSTEXPR_HALF uint16_t float2Half(const float &Val) {
   const uint8_t Exp32 = (Bits & 0x7f800000) >> 23;
   const int16_t Exp32Diff = Exp32 - 127;
 
-  // intialize to 0, covers the case for 0 and small numbers
+  // initialize to 0, covers the case for 0 and small numbers
   uint16_t Exp16 = 0, Frac16 = 0;
 
   if (__builtin_expect(Exp32Diff > 15, 0)) {
@@ -255,6 +263,8 @@ public:
   // Initialize underlying data
   constexpr explicit half_v2(uint16_t x) : Buf(x) {}
 
+  friend class sycl::ext::intel::esimd::detail::WrapperElementTypeProxy;
+
 private:
   uint16_t Buf;
 };
@@ -299,7 +309,14 @@ using BIsRepresentationT = half;
 // as a kernel argument which is expected to be floating point number.
 template <int NumElements> struct half_vec {
   alignas(detail::vector_alignment<StorageT, NumElements>::value)
-      std::array<StorageT, NumElements> s;
+      StorageT s[NumElements];
+
+  __SYCL_CONSTEXPR_HALF half_vec() : s{0.0f} { initialize_data(); }
+  constexpr void initialize_data() {
+    for (size_t i = 0; i < NumElements; ++i) {
+      s[i] = StorageT(0.0f);
+    }
+  }
 };
 
   using Vec2StorageT = half_vec<2>;
@@ -322,7 +339,7 @@ public:
 #ifndef __SYCL_DEVICE_ONLY__
   // Since StorageT and BIsRepresentationT are different on host, these two
   // helpers are required for 'vec' class
-  constexpr half(const detail::host_half_impl::half_v2 &rhs) : Data(rhs){};
+  constexpr half(const detail::host_half_impl::half_v2 &rhs) : Data(rhs) {}
   constexpr operator detail::host_half_impl::half_v2() const { return Data; }
 #endif // __SYCL_DEVICE_ONLY__
 
@@ -383,6 +400,9 @@ public:
   }
 
   template <typename Key> friend struct std::hash;
+
+  friend class sycl::ext::intel::esimd::detail::WrapperElementTypeProxy;
+
 private:
   StorageT Data;
 };

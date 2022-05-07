@@ -46,7 +46,18 @@ set(FLANG_TEST_PARAMS
   flang_site_config=${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg.py)
 
 set(FLANG_TEST_DEPENDS
-  flang-new FileCheck count not module_files fir-opt tco
+  flang-new
+  llvm-config
+  FileCheck
+  count
+  not
+  module_files
+  fir-opt
+  tco
+  bbc
+  llvm-dis
+  llvm-objdump
+  split-file
 )
 
 if (FLANG_INCLUDE_TESTS)
@@ -56,7 +67,10 @@ if (FLANG_INCLUDE_TESTS)
 endif()
 
 if (FLANG_BUILD_EXAMPLES)
-  list(APPEND FLANG_TEST_DEPENDS flangHelloWorldPlugin)
+  list(APPEND FLANG_TEST_DEPENDS
+    flangPrintFunctionNames
+    flangOmpReport
+    )
 endif ()
 
 add_custom_target(flang-test-depends DEPENDS ${FLANG_TEST_DEPENDS})

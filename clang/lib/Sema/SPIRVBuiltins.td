@@ -722,12 +722,6 @@ foreach VSize1 = [Vec2, Vec4, Vec8, Vec16] in {
 
 // 2.8. Misc instructions
 
-let IsVariadic = 1 in {
-  foreach name = ["printf"] in {
-    def : OCLSPVBuiltin<name, [Int, PointerType<ConstType<TrueChar>, ConstantAS>]>;
-  }
-}
-
 foreach name = ["prefetch"] in {
   def : OCLSPVBuiltin<name, [Void, PointerType<ConstType<AGenTypeN>, GlobalAS>, Size]>;
 }
@@ -935,13 +929,13 @@ foreach name = ["GroupBroadcast"] in {
   }
 }
 
-foreach name = ["GroupIAdd", "GroupNonUniformIMul", "GroupNonUniformBitwiseOr",
-                "GroupNonUniformBitwiseXor", "GroupNonUniformBitwiseAnd"] in {
+foreach name = ["GroupIAdd", "GroupIMulKHR", "GroupBitwiseOrKHR",
+                "GroupBitwiseXorKHR", "GroupBitwiseAndKHR"] in {
   def : SPVBuiltin<name, [AIGenTypeN, UInt, UInt, AIGenTypeN], Attr.Convergent>;
 }
 
 foreach name = ["GroupFAdd", "GroupFMin", "GroupFMax",
-                "GroupNonUniformFMul"] in {
+                "GroupFMulKHR"] in {
   def : SPVBuiltin<name, [FGenTypeN, UInt, UInt, FGenTypeN], Attr.Convergent>;
 }
 

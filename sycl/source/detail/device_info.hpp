@@ -19,6 +19,7 @@
 #include <detail/platform_impl.hpp>
 #include <detail/platform_util.hpp>
 #include <detail/plugin.hpp>
+#include <detail/program_manager/program_manager.hpp>
 
 #include <chrono>
 #include <thread>
@@ -126,7 +127,7 @@ template <info::device param> struct get_device_info<platform, param> {
 // for string return type in other specializations.
 template <info::device param> struct get_device_info_string {
   static std::string get(RT::PiDevice dev, const plugin &Plugin) {
-    size_t resultSize;
+    size_t resultSize = 0;
     Plugin.call<PiApiKind::piDeviceGetInfo>(
         dev, pi::cast<RT::PiDeviceInfo>(param), 0, nullptr, &resultSize);
     if (resultSize == 0) {
@@ -233,23 +234,6 @@ template <> struct get_device_info<bool, info::device::queue_profiling> {
   }
 };
 
-// Specialization for atomic64 that is necessary because
-// PI_DEVICE_INFO_ATOMIC_64 is currently only implemented for the cuda backend.
-template <> struct get_device_info<bool, info::device::atomic64> {
-  static bool get(RT::PiDevice dev, const plugin &Plugin) {
-
-    bool result = false;
-
-    RT::PiResult Err = Plugin.call_nocheck<PiApiKind::piDeviceGetInfo>(
-        dev, pi::cast<RT::PiDeviceInfo>(info::device::atomic64), sizeof(result),
-        &result, nullptr);
-    if (Err != PI_SUCCESS) {
-      return false;
-    }
-    return result;
-  }
-};
-
 // Specialization for atomic_memory_order_capabilities, PI returns a bitfield
 template <>
 struct get_device_info<std::vector<memory_order>,
@@ -265,6 +249,21 @@ struct get_device_info<std::vector<memory_order>,
   }
 };
 
+// Specialization for atomic_memory_scope_capabilities, PI returns a bitfield
+template <>
+struct get_device_info<std::vector<memory_scope>,
+                       info::device::atomic_memory_scope_capabilities> {
+  static std::vector<memory_scope> get(RT::PiDevice dev, const plugin &Plugin) {
+    pi_memory_scope_capabilities result;
+    Plugin.call_nocheck<PiApiKind::piDeviceGetInfo>(
+        dev,
+        pi::cast<RT::PiDeviceInfo>(
+            info::device::atomic_memory_scope_capabilities),
+        sizeof(pi_memory_scope_capabilities), &result, nullptr);
+    return readMemoryScopeBitfield(result);
+  }
+};
+
 // Specialization for exec_capabilities, OpenCL returns a bitfield
 template <>
 struct get_device_info<std::vector<info::execution_capability>,
@@ -276,6 +275,25 @@ struct get_device_info<std::vector<info::execution_capability>,
         dev, pi::cast<RT::PiDeviceInfo>(info::device::execution_capabilities),
         sizeof(result), &result, nullptr);
     return read_execution_bitfield(result);
+  }
+};
+
+// Specialization for built in kernel identifiers
+template <>
+struct get_device_info<std::vector<kernel_id>,
+                       info::device::built_in_kernel_ids> {
+  static std::vector<kernel_id> get(RT::PiDevice dev, const plugin &Plugin) {
+    std::string result =
+        get_device_info<std::string, info::device::built_in_kernels>::get(
+            dev, Plugin);
+    auto names = split_string(result, ';');
+
+    std::vector<kernel_id> ids;
+    ids.reserve(names.size());
+    for (const auto &name : names) {
+      ids.push_back(ProgramManager::getInstance().getBuiltInKernelID(name));
+    }
+    return ids;
   }
 };
 
@@ -473,6 +491,62 @@ template <> struct get_device_info<id<3>, info::device::max_work_item_sizes> {
   }
 };
 
+template <>
+struct get_device_info<size_t,
+                       info::device::ext_oneapi_max_global_work_groups> {
+  static size_t get(RT::PiDevice dev, const plugin &Plugin) {
+    (void)dev; // Silence unused warning
+    (void)Plugin;
+    return static_cast<size_t>((std::numeric_limits<int>::max)());
+  }
+};
+
+template <>
+struct get_device_info<id<1>, info::device::ext_oneapi_max_work_groups_1d> {
+  static id<1> get(RT::PiDevice dev, const plugin &Plugin) {
+    size_t result[3];
+    size_t Limit = get_device_info<
+        size_t, info::device::ext_oneapi_max_global_work_groups>::get(dev,
+                                                                      Plugin);
+    Plugin.call<PiApiKind::piDeviceGetInfo>(
+        dev,
+        pi::cast<RT::PiDeviceInfo>(info::device::ext_oneapi_max_work_groups_3d),
+        sizeof(result), &result, nullptr);
+    return id<1>(std::min(Limit, result[0]));
+  }
+};
+
+template <>
+struct get_device_info<id<2>, info::device::ext_oneapi_max_work_groups_2d> {
+  static id<2> get(RT::PiDevice dev, const plugin &Plugin) {
+    size_t result[3];
+    size_t Limit = get_device_info<
+        size_t, info::device::ext_oneapi_max_global_work_groups>::get(dev,
+                                                                      Plugin);
+    Plugin.call<PiApiKind::piDeviceGetInfo>(
+        dev,
+        pi::cast<RT::PiDeviceInfo>(info::device::ext_oneapi_max_work_groups_3d),
+        sizeof(result), &result, nullptr);
+    return id<2>(std::min(Limit, result[1]), std::min(Limit, result[0]));
+  }
+};
+
+template <>
+struct get_device_info<id<3>, info::device::ext_oneapi_max_work_groups_3d> {
+  static id<3> get(RT::PiDevice dev, const plugin &Plugin) {
+    size_t result[3];
+    size_t Limit = get_device_info<
+        size_t, info::device::ext_oneapi_max_global_work_groups>::get(dev,
+                                                                      Plugin);
+    Plugin.call<PiApiKind::piDeviceGetInfo>(
+        dev,
+        pi::cast<RT::PiDeviceInfo>(info::device::ext_oneapi_max_work_groups_3d),
+        sizeof(result), &result, nullptr);
+    return id<3>(std::min(Limit, result[2]), std::min(Limit, result[1]),
+                 std::min(Limit, result[0]));
+  }
+};
+
 // Specialization for parent device
 template <> struct get_device_info<device, info::device::parent_device> {
   static device get(RT::PiDevice dev, const plugin &Plugin) {
@@ -524,6 +598,40 @@ template <>
 inline id<3> get_device_info_host<info::device::max_work_item_sizes>() {
   // current value is the required minimum
   return {1, 1, 1};
+}
+
+template <>
+inline constexpr size_t
+get_device_info_host<info::device::ext_oneapi_max_global_work_groups>() {
+  // See handler.hpp for the maximum value :
+  return static_cast<size_t>((std::numeric_limits<int>::max)());
+}
+
+template <>
+inline id<1>
+get_device_info_host<info::device::ext_oneapi_max_work_groups_1d>() {
+  // See handler.hpp for the maximum value :
+  static constexpr size_t Limit =
+      get_device_info_host<info::device::ext_oneapi_max_global_work_groups>();
+  return {Limit};
+}
+
+template <>
+inline id<2>
+get_device_info_host<info::device::ext_oneapi_max_work_groups_2d>() {
+  // See handler.hpp for the maximum value :
+  static constexpr size_t Limit =
+      get_device_info_host<info::device::ext_oneapi_max_global_work_groups>();
+  return {Limit, Limit};
+}
+
+template <>
+inline id<3>
+get_device_info_host<info::device::ext_oneapi_max_work_groups_3d>() {
+  // See handler.hpp for the maximum value :
+  static constexpr size_t Limit =
+      get_device_info_host<info::device::ext_oneapi_max_global_work_groups>();
+  return {Limit, Limit, Limit};
 }
 
 template <>
@@ -655,6 +763,13 @@ get_device_info_host<info::device::atomic_memory_order_capabilities>() {
 }
 
 template <>
+inline std::vector<memory_scope>
+get_device_info_host<info::device::atomic_memory_scope_capabilities>() {
+  return {memory_scope::work_item, memory_scope::sub_group,
+          memory_scope::work_group, memory_scope::device, memory_scope::system};
+}
+
+template <>
 inline cl_uint get_device_info_host<info::device::max_read_image_args>() {
   // current value is the required minimum
   return 128;
@@ -668,32 +783,82 @@ inline cl_uint get_device_info_host<info::device::max_write_image_args>() {
 
 template <>
 inline size_t get_device_info_host<info::device::image2d_max_width>() {
-  // current value is the required minimum
-  return 8192;
+  // SYCL guarantees at least 8192. Some devices already known to provide more
+  // than that (i.e. it is 16384 for opencl:gpu), which may create issues during
+  // image object allocation on host.
+  // Using any fixed number (i.e. 16384) brings the risk of having similar
+  // issues on newer devices in future. Thus it does not make sense limiting
+  // the returned value on host. Practially speaking the returned value on host
+  // depends only on memory required for the image, which also depends on
+  // the image channel_type and the image height. Both are not known in this
+  // query, thus it becomes user's responsibility to choose proper image
+  // parameters depending on similar query to (non-host device) and amount
+  // of available/allocatable memory.
+  return std::numeric_limits<std::size_t>::max();
 }
 
 template <>
 inline size_t get_device_info_host<info::device::image2d_max_height>() {
-  // current value is the required minimum
-  return 8192;
+  // SYCL guarantees at least 8192. Some devices already known to provide more
+  // than that (i.e. it is 16384 for opencl:gpu), which may create issues during
+  // image object allocation on host.
+  // Using any fixed number (i.e. 16384) brings the risk of having similar
+  // issues on newer devices in future. Thus it does not make sense limiting
+  // the returned value on host. Practially speaking the returned value on host
+  // depends only on memory required for the image, which also depends on
+  // the image channel_type and the image width. Both are not known in this
+  // query, thus it becomes user's responsibility to choose proper image
+  // parameters depending on similar query to (non-host device) and amount
+  // of available/allocatable memory.
+  return std::numeric_limits<std::size_t>::max();
 }
 
 template <>
 inline size_t get_device_info_host<info::device::image3d_max_width>() {
-  // current value is the required minimum
-  return 2048;
+  // SYCL guarantees at least 8192. Some devices already known to provide more
+  // than that (i.e. it is 16384 for opencl:gpu), which may create issues during
+  // image object allocation on host.
+  // Using any fixed number (i.e. 16384) brings the risk of having similar
+  // issues on newer devices in future. Thus it does not make sense limiting
+  // the returned value on host. Practially speaking the returned value on host
+  // depends only on memory required for the image, which also depends on
+  // the image channel_type and the image height/depth. Both are not known
+  // in this query, thus it becomes user's responsibility to choose proper image
+  // parameters depending on similar query to (non-host device) and amount
+  // of available/allocatable memory.
+  return std::numeric_limits<std::size_t>::max();
 }
 
 template <>
 inline size_t get_device_info_host<info::device::image3d_max_height>() {
-  // current value is the required minimum
-  return 2048;
+  // SYCL guarantees at least 8192. Some devices already known to provide more
+  // than that (i.e. it is 16384 for opencl:gpu), which may create issues during
+  // image object allocation on host.
+  // Using any fixed number (i.e. 16384) brings the risk of having similar
+  // issues on newer devices in future. Thus it does not make sense limiting
+  // the returned value on host. Practially speaking the returned value on host
+  // depends only on memory required for the image, which also depends on
+  // the image channel_type and the image width/depth. Both are not known
+  // in this query, thus it becomes user's responsibility to choose proper image
+  // parameters depending on similar query to (non-host device) and amount
+  // of available/allocatable memory.
+  return std::numeric_limits<std::size_t>::max();
 }
 
 template <>
 inline size_t get_device_info_host<info::device::image3d_max_depth>() {
-  // current value is the required minimum
-  return 2048;
+  // SYCL guarantees at least 8192. Some devices already known to provide more
+  // than that (i.e. it is 16384 for opencl:gpu), which may create issues during
+  // image object allocation on host.
+  // Using any fixed number (i.e. 16384) brings the risk of having similar
+  // issues on newer devices in future. Thus it does not make sense limiting
+  // the returned value on host. Practially speaking the returned value on host
+  // depends only on memory required for the image, which also depends on
+  // the image channel_type and the image height/width, which are not known
+  // in this query, thus it becomes user's responsibility to choose proper image
+  // parameters depending on similar query to (non-host device) and amount
+  // of available/allocatable memory.
+  return std::numeric_limits<std::size_t>::max();
 }
 
 template <>
@@ -840,6 +1005,12 @@ template <> inline bool get_device_info_host<info::device::queue_profiling>() {
 }
 
 template <>
+inline std::vector<kernel_id>
+get_device_info_host<info::device::built_in_kernel_ids>() {
+  return {};
+}
+
+template <>
 inline std::vector<std::string>
 get_device_info_host<info::device::built_in_kernels>() {
   return {};
@@ -895,7 +1066,7 @@ inline bool get_device_info_host<info::device::preferred_interop_user_sync>() {
 
 template <> inline device get_device_info_host<info::device::parent_device>() {
   // TODO: implement host device partitioning
-  throw runtime_error(
+  throw invalid_object_error(
       "Partitioning to subdevices of the host device is not implemented yet",
       PI_INVALID_DEVICE);
 }
@@ -965,6 +1136,13 @@ get_device_info_host<info::device::sub_group_independent_forward_progress>() {
 template <>
 inline bool get_device_info_host<info::device::kernel_kernel_pipe_support>() {
   return false;
+}
+
+template <>
+inline std::string get_device_info_host<info::device::backend_version>() {
+  throw runtime_error(
+      "Backend version feature is not supported on HOST device.",
+      PI_INVALID_DEVICE);
 }
 
 template <>
@@ -1114,6 +1292,13 @@ inline cl_uint
 get_device_info_host<info::device::ext_intel_gpu_eu_count_per_subslice>() {
   throw runtime_error(
       "Obtaining the EU count per subslice is not supported on HOST device",
+      PI_INVALID_DEVICE);
+}
+template <>
+inline cl_uint
+get_device_info_host<info::device::ext_intel_gpu_hw_threads_per_eu>() {
+  throw runtime_error(
+      "Obtaining the HW threads count per EU is not supported on HOST device",
       PI_INVALID_DEVICE);
 }
 template <>

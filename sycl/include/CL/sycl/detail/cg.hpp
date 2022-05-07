@@ -79,8 +79,8 @@ namespace detail {
 //
 // 0x00000001 - CG type KERNEL version 0
 // 0x01000001 - CG type KERNEL version 1
-//   /\
-//   ||
+//    ^
+//    |
 // The byte specifies the version
 //
 // A user of this vector should not expect that a specific data is stored at a
@@ -94,6 +94,10 @@ namespace detail {
 enum class ExtendedMembersType : unsigned int {
   HANDLER_KERNEL_BUNDLE = 0,
   HANDLER_MEM_ADVICE,
+  // handler_impl is stored in the exended members to avoid breaking ABI.
+  // TODO: This should be made a member of the handler class once ABI can be
+  //       broken.
+  HANDLER_IMPL,
 };
 
 // Holds a pointer to an object of an arbitrary type and an ID value which
@@ -244,6 +248,7 @@ public:
   std::string MKernelName;
   detail::OSModuleHandle MOSModuleHandle;
   std::vector<std::shared_ptr<detail::stream_impl>> MStreams;
+  std::vector<std::shared_ptr<const void>> MAuxiliaryResources;
 
   CGExecKernel(NDRDescT NDRDesc, std::unique_ptr<HostKernelBase> HKernel,
                std::shared_ptr<detail::kernel_impl> SyclKernel,
@@ -255,6 +260,7 @@ public:
                std::vector<ArgDesc> Args, std::string KernelName,
                detail::OSModuleHandle OSModuleHandle,
                std::vector<std::shared_ptr<detail::stream_impl>> Streams,
+               std::vector<std::shared_ptr<const void>> AuxiliaryResources,
                CGTYPE Type, detail::code_location loc = {})
       : CG(Type, std::move(ArgsStorage), std::move(AccStorage),
            std::move(SharedPtrStorage), std::move(Requirements),
@@ -262,7 +268,8 @@ public:
         MNDRDesc(std::move(NDRDesc)), MHostKernel(std::move(HKernel)),
         MSyclKernel(std::move(SyclKernel)), MArgs(std::move(Args)),
         MKernelName(std::move(KernelName)), MOSModuleHandle(OSModuleHandle),
-        MStreams(std::move(Streams)) {
+        MStreams(std::move(Streams)),
+        MAuxiliaryResources(std::move(AuxiliaryResources)) {
     assert((getType() == RunOnHostIntel || getType() == Kernel) &&
            "Wrong type of exec kernel CG.");
   }
@@ -271,6 +278,10 @@ public:
   std::string getKernelName() const { return MKernelName; }
   std::vector<std::shared_ptr<detail::stream_impl>> getStreams() const {
     return MStreams;
+  }
+
+  std::vector<std::shared_ptr<const void>> getAuxiliaryResources() const {
+    return MAuxiliaryResources;
   }
 
   std::shared_ptr<detail::kernel_bundle_impl> getKernelBundle() {
@@ -286,6 +297,10 @@ public:
   }
 
   void clearStreams() { MStreams.clear(); }
+  bool hasStreams() { return !MStreams.empty(); }
+
+  void clearAuxiliaryResources() { MAuxiliaryResources.clear(); }
+  bool hasAuxiliaryResources() { return !MAuxiliaryResources.empty(); }
 };
 
 /// "Copy memory" command group class.
@@ -439,11 +454,11 @@ public:
   pi_mem_advice getAdvice() {
     auto ExtendedMembers = getExtendedMembers();
     if (!ExtendedMembers)
-      return PI_MEM_ADVISE_UNKNOWN;
+      return PI_MEM_ADVICE_UNKNOWN;
     for (const ExtendedMemberT &EM : *ExtendedMembers)
       if ((ExtendedMembersType::HANDLER_MEM_ADVICE == EM.MType) && EM.MData)
         return *std::static_pointer_cast<pi_mem_advice>(EM.MData);
-    return PI_MEM_ADVISE_UNKNOWN;
+    return PI_MEM_ADVICE_UNKNOWN;
   }
 };
 

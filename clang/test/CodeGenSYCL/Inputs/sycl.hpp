@@ -4,6 +4,11 @@
 
 extern "C" int printf(const char* fmt, ...);
 
+#ifdef __SYCL_DEVICE_ONLY__
+__attribute__((convergent)) extern SYCL_EXTERNAL void
+__spirv_ControlBarrier(int, int, int) noexcept;
+#endif
+
 // Dummy runtime classes to model SYCL API.
 inline namespace cl {
 namespace sycl {
@@ -13,7 +18,7 @@ struct sampler_impl {
 #endif
 };
 
-class sampler {
+class __attribute__((sycl_special_class)) sampler {
   struct sampler_impl impl;
 #ifdef __SYCL_DEVICE_ONLY__
   void __init(__ocl_sampler_t Sampler) { impl.m_Sampler = Sampler; }
@@ -62,6 +67,18 @@ enum class address_space : int {
   local_space
 };
 } // namespace access
+
+// Dummy aspect enum with limited enumerators
+enum class aspect {
+  host = 0,
+  cpu = 1,
+  gpu = 2,
+  accelerator = 3,
+  custom = 4,
+  fp16 = 5,
+  fp64 = 6,
+};
+
 using access::target;
 using access_mode = access::mode;
 
@@ -117,6 +134,19 @@ struct no_alias {
   template <bool> class instance {};
 };
 } // namespace property
+
+// device_global type decorated with attributes
+template <typename T>
+class [[__sycl_detail__::device_global]] [[__sycl_detail__::global_variable_allowed]] device_global {
+public:
+  const T &get() const noexcept { return *Data; }
+  device_global() {}
+  operator T &() noexcept { return *Data; }
+
+private:
+  T *Data;
+};
+
 } // namespace oneapi
 } // namespace ext
 
@@ -143,21 +173,8 @@ namespace ext {
 namespace oneapi {
 template <typename... properties>
 class accessor_property_list {};
-namespace experimental {
-template <int Dims> item<Dims>
-this_item() { return item<Dims>{}; }
-
-template <int Dims> id<Dims>
-this_id() { return id<Dims>{}; }
-} // namespace experimental
 } // namespace oneapi
 } // namespace ext
-
-template <int Dims> item<Dims>
-this_item() { return item<Dims>{}; }
-
-template <int Dims> id<Dims>
-this_id() { return id<Dims>{}; }
 
 template <int dim>
 struct range {
@@ -184,7 +201,7 @@ template <typename dataT, int dimensions, access::mode accessmode,
           access::target accessTarget = access::target::global_buffer,
           access::placeholder isPlaceholder = access::placeholder::false_t,
           typename propertyListT = ext::oneapi::accessor_property_list<>>
-class accessor {
+class __attribute__((sycl_special_class)) accessor {
 
 public:
   void use(void) const {}
@@ -250,7 +267,7 @@ struct _ImageImplT {
 };
 
 template <typename dataT, int dimensions, access::mode accessmode>
-class accessor<dataT, dimensions, accessmode, access::target::image, access::placeholder::false_t> {
+class __attribute__((sycl_special_class)) accessor<dataT, dimensions, accessmode, access::target::image, access::placeholder::false_t> {
 public:
   void use(void) const {}
   template <typename... T>
@@ -387,10 +404,19 @@ kernel_parallel_for(const KernelType &KernelFunc) {
   KernelFunc(id<Dims>());
 }
 
+// Dummy parallel_for_work_item function to mimic calls from
+// parallel_for_work_group.
+void parallel_for_work_item() {
+#ifdef __SYCL_DEVICE_ONLY__
+  __spirv_ControlBarrier(0, 0, 0);
+#endif
+}
+
 template <typename KernelName, typename KernelType, int Dims>
 ATTR_SYCL_KERNEL void
 kernel_parallel_for_work_group(const KernelType &KernelFunc) {
   KernelFunc(group<Dims>());
+  parallel_for_work_item();
 }
 
 class handler {
@@ -447,7 +473,7 @@ public:
   }
 };
 
-class stream {
+class __attribute__((sycl_special_class)) stream {
 public:
   stream(unsigned long BufferSize, unsigned long MaxStatementSize,
          handler &CGH) {}

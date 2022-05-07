@@ -209,7 +209,7 @@ int Compilation::ExecuteCommand(const Command &C,
         !getDriver().CCPrintOptionsFilename.empty()) {
       std::error_code EC;
       OwnedStream.reset(new llvm::raw_fd_ostream(
-          getDriver().CCPrintOptionsFilename.c_str(), EC,
+          getDriver().CCPrintOptionsFilename, EC,
           llvm::sys::fs::OF_Append | llvm::sys::fs::OF_TextWithCRLF));
       if (EC) {
         getDriver().Diag(diag::err_drv_cc_print_options_failure)
@@ -235,6 +235,14 @@ int Compilation::ExecuteCommand(const Command &C,
     assert(Res && "Error string set with 0 result code!");
     getDriver().Diag(diag::err_drv_command_failure) << Error;
   }
+
+  // When performing preprocessing, we need to be able to produce the
+  // preprocessed output even if the compilation is not valid.  If
+  // the device compilation fails for SYCL allow the failure to pass
+  // through so we can still generate the expected preprocessed files.
+  if (Res && C.getSource().isDeviceOffloading(Action::OFK_SYCL) &&
+      getArgs().hasArg(options::OPT_E))
+    return 0;
 
   if (Res)
     FailingCommand = &C;

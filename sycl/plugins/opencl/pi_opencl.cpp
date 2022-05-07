@@ -57,6 +57,7 @@ CONSTFIX char clHostMemAllocName[] = "clHostMemAllocINTEL";
 CONSTFIX char clDeviceMemAllocName[] = "clDeviceMemAllocINTEL";
 CONSTFIX char clSharedMemAllocName[] = "clSharedMemAllocINTEL";
 CONSTFIX char clMemFreeName[] = "clMemFreeINTEL";
+CONSTFIX char clMemBlockingFreeName[] = "clMemBlockingFreeINTEL";
 CONSTFIX char clCreateBufferWithPropertiesName[] =
     "clCreateBufferWithPropertiesINTEL";
 CONSTFIX char clSetKernelArgMemPointerName[] = "clSetKernelArgMemPointerINTEL";
@@ -65,8 +66,29 @@ CONSTFIX char clEnqueueMemcpyName[] = "clEnqueueMemcpyINTEL";
 CONSTFIX char clGetMemAllocInfoName[] = "clGetMemAllocInfoINTEL";
 CONSTFIX char clSetProgramSpecializationConstantName[] =
     "clSetProgramSpecializationConstant";
+CONSTFIX char clGetDeviceFunctionPointerName[] =
+    "clGetDeviceFunctionPointerINTEL";
 
 #undef CONSTFIX
+
+// Global variables for PI_PLUGIN_SPECIFIC_ERROR
+constexpr size_t MaxMessageSize = 256;
+thread_local pi_result ErrorMessageCode = PI_SUCCESS;
+thread_local char ErrorMessage[MaxMessageSize];
+
+// Utility function for setting a message and warning
+[[maybe_unused]] static void setErrorMessage(const char *message,
+                                             pi_result error_code) {
+  assert(strlen(message) <= MaxMessageSize);
+  strcpy(ErrorMessage, message);
+  ErrorMessageCode = error_code;
+}
+
+// Returns plugin specific error and warning messages
+pi_result piPluginGetLastError(char **message) {
+  *message = &ErrorMessage[0];
+  return ErrorMessageCode;
+}
 
 // USM helper function to get an extension function pointer
 template <const char *FuncName, typename T>
@@ -77,8 +99,10 @@ static pi_result getExtFuncFromContext(pi_context context, T *fptr) {
 
   // if cached, return cached FuncPtr
   if (auto F = FuncPtrs[context]) {
+    // if cached that extension is not available return nullptr and
+    // PI_INVALID_VALUE
     *fptr = F;
-    return PI_SUCCESS;
+    return F ? PI_SUCCESS : PI_INVALID_VALUE;
   }
 
   cl_uint deviceCount;
@@ -110,8 +134,11 @@ static pi_result getExtFuncFromContext(pi_context context, T *fptr) {
   T FuncPtr =
       (T)clGetExtensionFunctionAddressForPlatform(curPlatform, FuncName);
 
-  if (!FuncPtr)
+  if (!FuncPtr) {
+    // Cache that the extension is not available
+    FuncPtrs[context] = nullptr;
     return PI_INVALID_VALUE;
+  }
 
   *fptr = FuncPtr;
   FuncPtrs[context] = FuncPtr;
@@ -171,26 +198,72 @@ pi_result piDeviceGetInfo(pi_device device, pi_device_info paramName,
   switch (paramName) {
     // TODO: Check regularly to see if support in enabled in OpenCL.
     // Intel GPU EU device-specific information extensions.
+    // Some of the queries are enabled by cl_intel_device_attribute_query
+    // extension, but it's not yet in the Registry.
   case PI_DEVICE_INFO_PCI_ADDRESS:
   case PI_DEVICE_INFO_GPU_EU_COUNT:
   case PI_DEVICE_INFO_GPU_EU_SIMD_WIDTH:
   case PI_DEVICE_INFO_GPU_SLICES:
   case PI_DEVICE_INFO_GPU_SUBSLICES_PER_SLICE:
   case PI_DEVICE_INFO_GPU_EU_COUNT_PER_SUBSLICE:
+  case PI_DEVICE_INFO_GPU_HW_THREADS_PER_EU:
   case PI_DEVICE_INFO_MAX_MEM_BANDWIDTH:
     // TODO: Check if device UUID extension is enabled in OpenCL.
     // For details about Intel UUID extension, see
-    // sycl/doc/extensions/IntelGPU/IntelGPUDeviceInfo.md
+    // sycl/doc/extensions/supported/sycl_ext_intel_device_info.md
   case PI_DEVICE_INFO_UUID:
-  // TODO: Implement.
-  case PI_DEVICE_INFO_ATOMIC_64:
   case PI_DEVICE_INFO_ATOMIC_MEMORY_ORDER_CAPABILITIES:
+  case PI_DEVICE_INFO_ATOMIC_MEMORY_SCOPE_CAPABILITIES:
     return PI_INVALID_VALUE;
+  case PI_DEVICE_INFO_ATOMIC_64: {
+    size_t extSize;
+    cl_bool result = clGetDeviceInfo(
+        cast<cl_device_id>(device), CL_DEVICE_EXTENSIONS, 0, nullptr, &extSize);
+    std::string extStr(extSize, '\0');
+    result = clGetDeviceInfo(cast<cl_device_id>(device), CL_DEVICE_EXTENSIONS,
+                             extSize, &extStr.front(), nullptr);
+    if (extStr.find("cl_khr_int64_base_atomics") == std::string::npos ||
+        extStr.find("cl_khr_int64_extended_atomics") == std::string::npos)
+      result = false;
+    else
+      result = true;
+    std::memcpy(paramValue, &result, sizeof(cl_bool));
+    return PI_SUCCESS;
+  }
   case PI_DEVICE_INFO_IMAGE_SRGB: {
     cl_bool result = true;
     std::memcpy(paramValue, &result, sizeof(cl_bool));
     return PI_SUCCESS;
   }
+  case PI_DEVICE_INFO_BUILD_ON_SUBDEVICE: {
+    cl_device_type devType = CL_DEVICE_TYPE_DEFAULT;
+    cl_int res = clGetDeviceInfo(cast<cl_device_id>(device), CL_DEVICE_TYPE,
+                                 sizeof(cl_device_type), &devType, nullptr);
+
+    // FIXME: here we assume that program built for a root GPU device can be
+    // used on its sub-devices without re-building
+    cl_bool result = (res == CL_SUCCESS) && (devType == CL_DEVICE_TYPE_GPU);
+    std::memcpy(paramValue, &result, sizeof(cl_bool));
+    return PI_SUCCESS;
+  }
+  case PI_EXT_ONEAPI_DEVICE_INFO_MAX_WORK_GROUPS_3D:
+    // Returns the maximum sizes of a work group for each dimension one
+    // could use to submit a kernel. There is no such query defined in OpenCL
+    // so we'll return the maximum value.
+    {
+      if (paramValueSizeRet)
+        *paramValueSizeRet = paramValueSize;
+      static constexpr size_t Max = (std::numeric_limits<size_t>::max)();
+      size_t *out = cast<size_t *>(paramValue);
+      if (paramValueSize >= sizeof(size_t))
+        out[0] = Max;
+      if (paramValueSize >= 2 * sizeof(size_t))
+        out[1] = Max;
+      if (paramValueSize >= 3 * sizeof(size_t))
+        out[2] = Max;
+      return PI_SUCCESS;
+    }
+
   default:
     cl_int result = clGetDeviceInfo(
         cast<cl_device_id>(device), cast<cl_device_info>(paramName),
@@ -363,6 +436,7 @@ pi_result piextQueueCreateWithNativeHandle(pi_native_handle nativeHandle,
   (void)ownNativeHandle;
   assert(piQueue != nullptr);
   *piQueue = reinterpret_cast<pi_queue>(nativeHandle);
+  clRetainCommandQueue(cast<cl_command_queue>(nativeHandle));
   return PI_SUCCESS;
 }
 
@@ -444,7 +518,7 @@ pi_result piProgramCreate(pi_context context, const void *il, size_t length,
 }
 
 pi_result piextProgramCreateWithNativeHandle(pi_native_handle nativeHandle,
-                                             pi_context,
+                                             pi_context, bool,
                                              pi_program *piProgram) {
   assert(piProgram != nullptr);
   *piProgram = reinterpret_cast<pi_program>(nativeHandle);
@@ -497,48 +571,104 @@ pi_result piextKernelSetArgSampler(pi_kernel kernel, pi_uint32 arg_index,
 }
 
 pi_result piextKernelCreateWithNativeHandle(pi_native_handle nativeHandle,
-                                            pi_context, bool,
+                                            pi_context, pi_program, bool,
                                             pi_kernel *piKernel) {
   assert(piKernel != nullptr);
   *piKernel = reinterpret_cast<pi_kernel>(nativeHandle);
   return PI_SUCCESS;
 }
 
+// Function gets characters between delimeter's in str
+// then checks if they are equal to the sub_str.
+// returns true if there is at least one instance
+// returns false if there are no instances of the name
+static bool is_in_separated_string(const std::string &str, char delimiter,
+                                   const std::string &sub_str) {
+  size_t beg = 0;
+  size_t length = 0;
+  for (const auto &x : str) {
+    if (x == delimiter) {
+      if (str.substr(beg, length) == sub_str)
+        return true;
+
+      beg += length + 1;
+      length = 0;
+      continue;
+    }
+    length++;
+  }
+  if (length != 0)
+    if (str.substr(beg, length) == sub_str)
+      return true;
+
+  return false;
+}
+
+typedef CL_API_ENTRY cl_int(CL_API_CALL *clGetDeviceFunctionPointer_fn)(
+    cl_device_id device, cl_program program, const char *FuncName,
+    cl_ulong *ret_ptr);
 pi_result piextGetDeviceFunctionPointer(pi_device device, pi_program program,
                                         const char *func_name,
                                         pi_uint64 *function_pointer_ret) {
-  pi_platform platform;
+
+  cl_context CLContext = nullptr;
   cl_int ret_err =
-      clGetDeviceInfo(cast<cl_device_id>(device), PI_DEVICE_INFO_PLATFORM,
-                      sizeof(platform), &platform, nullptr);
+      clGetProgramInfo(cast<cl_program>(program), CL_PROGRAM_CONTEXT,
+                       sizeof(CLContext), &CLContext, nullptr);
 
-  if (ret_err != CL_SUCCESS) {
+  if (ret_err != CL_SUCCESS)
     return cast<pi_result>(ret_err);
-  }
 
-  using FuncT =
-      cl_int(CL_API_CALL *)(cl_device_id, cl_program, const char *, cl_ulong *);
+  clGetDeviceFunctionPointer_fn FuncT = nullptr;
+  ret_err = getExtFuncFromContext<clGetDeviceFunctionPointerName,
+                                  clGetDeviceFunctionPointer_fn>(
+      cast<pi_context>(CLContext), &FuncT);
 
-  // TODO: add check that device supports corresponding extension
-  FuncT func_ptr =
-      reinterpret_cast<FuncT>(clGetExtensionFunctionAddressForPlatform(
-          cast<cl_platform_id>(platform), "clGetDeviceFunctionPointerINTEL"));
-  // TODO: once we have check that device supports corresponding extension,
-  // we can insert an assertion that func_ptr is not nullptr. For now, let's
-  // just return an error if failed to query such function
-  // assert(
-  //     func_ptr != nullptr &&
-  //     "Failed to get address of clGetDeviceFunctionPointerINTEL function");
+  pi_result pi_ret_err = PI_SUCCESS;
 
-  if (!func_ptr) {
-    if (function_pointer_ret)
+  // Check if kernel name exists, to prevent opencl runtime throwing exception
+  // with cpu runtime
+  // TODO: Use fallback search method if extension does not exist once CPU
+  // runtime no longer throws exceptions and prints messages when given
+  // unavailable functions.
+  *function_pointer_ret = 0;
+  size_t Size;
+  cl_int Res =
+      clGetProgramInfo(cast<cl_program>(program), PI_PROGRAM_INFO_KERNEL_NAMES,
+                       0, nullptr, &Size);
+  if (Res != CL_SUCCESS)
+    return cast<pi_result>(Res);
+
+  std::string ClResult(Size, ' ');
+  ret_err =
+      clGetProgramInfo(cast<cl_program>(program), PI_PROGRAM_INFO_KERNEL_NAMES,
+                       ClResult.size(), &ClResult[0], nullptr);
+  if (Res != CL_SUCCESS)
+    return cast<pi_result>(Res);
+
+  // Get rid of the null terminator and search for kernel_name
+  // If function cannot be found return error code to indicate it
+  // exists
+  ClResult.pop_back();
+  if (!is_in_separated_string(ClResult, ';', func_name))
+    return PI_INVALID_KERNEL_NAME;
+
+  pi_ret_err = PI_FUNCTION_ADDRESS_IS_NOT_AVAILABLE;
+
+  // If clGetDeviceFunctionPointer is in list of extensions
+  if (FuncT) {
+    pi_ret_err = cast<pi_result>(FuncT(cast<cl_device_id>(device),
+                                       cast<cl_program>(program), func_name,
+                                       function_pointer_ret));
+    // GPU runtime sometimes returns PI_INVALID_ARG_VALUE if func address cannot
+    // be found even if kernel exits. As the kernel does exist return that the
+    // address is not available
+    if (pi_ret_err == CL_INVALID_ARG_VALUE) {
       *function_pointer_ret = 0;
-    return PI_INVALID_DEVICE;
+      return PI_FUNCTION_ADDRESS_IS_NOT_AVAILABLE;
+    }
   }
-
-  return cast<pi_result>(func_ptr(cast<cl_device_id>(device),
-                                  cast<cl_program>(program), func_name,
-                                  function_pointer_ret));
+  return pi_ret_err;
 }
 
 pi_result piContextCreate(const pi_context_properties *properties,
@@ -623,7 +753,10 @@ pi_result piMemBufferPartition(pi_mem buffer, pi_mem_flags flags,
 }
 
 pi_result piextMemCreateWithNativeHandle(pi_native_handle nativeHandle,
-                                         pi_mem *piMem) {
+                                         pi_context context,
+                                         bool ownNativeHandle, pi_mem *piMem) {
+  (void)context;
+  (void)ownNativeHandle;
   assert(piMem != nullptr);
   *piMem = reinterpret_cast<pi_mem>(nativeHandle);
   return PI_SUCCESS;
@@ -682,6 +815,26 @@ pi_result piKernelCreate(pi_program program, const char *kernel_name,
   *ret_kernel = cast<pi_kernel>(clCreateKernel(
       cast<cl_program>(program), kernel_name, cast<cl_int *>(&ret_err)));
   return ret_err;
+}
+
+pi_result piKernelGetGroupInfo(pi_kernel kernel, pi_device device,
+                               pi_kernel_group_info param_name,
+                               size_t param_value_size, void *param_value,
+                               size_t *param_value_size_ret) {
+  if (kernel == nullptr) {
+    return PI_INVALID_KERNEL;
+  }
+
+  switch (param_name) {
+  case PI_KERNEL_GROUP_INFO_NUM_REGS:
+    return PI_INVALID_VALUE;
+  default:
+    cl_int result = clGetKernelWorkGroupInfo(
+        cast<cl_kernel>(kernel), cast<cl_device_id>(device),
+        cast<cl_kernel_work_group_info>(param_name), param_value_size,
+        param_value, param_value_size_ret);
+    return static_cast<pi_result>(result);
+  }
 }
 
 pi_result piKernelGetSubGroupInfo(pi_kernel kernel, pi_device device,
@@ -866,11 +1019,56 @@ pi_result piextUSMSharedAlloc(void **result_ptr, pi_context context,
 /// \param context is the pi_context of the allocation
 /// \param ptr is the memory to be freed
 pi_result piextUSMFree(pi_context context, void *ptr) {
+  // Use a blocking free to avoid issues with indirect access from kernels that
+  // might be still running.
+  clMemBlockingFreeINTEL_fn FuncPtr = nullptr;
 
-  clMemFreeINTEL_fn FuncPtr = nullptr;
+  // We need to use clMemBlockingFreeINTEL here, however, due to a bug in OpenCL
+  // CPU runtime this call fails with CL_INVALID_EVENT on CPU devices in certain
+  // cases. As a temporary workaround, this function replicates caching of
+  // extension function pointers in getExtFuncFromContext, while choosing
+  // clMemBlockingFreeINTEL for GPU and clMemFreeINTEL for other device types.
+  // TODO remove this workaround when the new OpenCL CPU runtime version is
+  // uplifted in CI.
+  static_assert(
+      std::is_same<clMemBlockingFreeINTEL_fn, clMemFreeINTEL_fn>::value);
+  cl_uint deviceCount;
+  cl_int ret_err =
+      clGetContextInfo(cast<cl_context>(context), CL_CONTEXT_NUM_DEVICES,
+                       sizeof(cl_uint), &deviceCount, nullptr);
+
+  if (ret_err != CL_SUCCESS || deviceCount < 1) {
+    return PI_INVALID_CONTEXT;
+  }
+
+  std::vector<cl_device_id> devicesInCtx(deviceCount);
+  ret_err = clGetContextInfo(cast<cl_context>(context), CL_CONTEXT_DEVICES,
+                             deviceCount * sizeof(cl_device_id),
+                             devicesInCtx.data(), nullptr);
+
+  if (ret_err != CL_SUCCESS) {
+    return PI_INVALID_CONTEXT;
+  }
+
+  bool useBlockingFree = true;
+  for (const cl_device_id &dev : devicesInCtx) {
+    cl_device_type devType = CL_DEVICE_TYPE_DEFAULT;
+    ret_err = clGetDeviceInfo(dev, CL_DEVICE_TYPE, sizeof(cl_device_type),
+                              &devType, nullptr);
+    if (ret_err != CL_SUCCESS) {
+      return PI_INVALID_DEVICE;
+    }
+    useBlockingFree &= devType == CL_DEVICE_TYPE_GPU;
+  }
+
   pi_result RetVal = PI_INVALID_OPERATION;
-  RetVal = getExtFuncFromContext<clMemFreeName, clMemFreeINTEL_fn>(context,
-                                                                   &FuncPtr);
+  if (useBlockingFree)
+    RetVal =
+        getExtFuncFromContext<clMemBlockingFreeName, clMemBlockingFreeINTEL_fn>(
+            context, &FuncPtr);
+  else
+    RetVal = getExtFuncFromContext<clMemFreeName, clMemFreeINTEL_fn>(context,
+                                                                     &FuncPtr);
 
   if (FuncPtr) {
     RetVal = cast<pi_result>(FuncPtr(cast<cl_context>(context), ptr));
@@ -1012,7 +1210,10 @@ pi_result piextUSMEnqueuePrefetch(pi_queue queue, const void *ptr, size_t size,
                                   pi_event *event) {
   (void)ptr;
   (void)size;
-  (void)flags;
+
+  // flags is currently unused so fail if set
+  if (flags != 0)
+    return PI_INVALID_VALUE;
 
   return cast<pi_result>(clEnqueueMarkerWithWaitList(
       cast<cl_command_queue>(queue), num_events_in_waitlist,
@@ -1108,7 +1309,7 @@ pi_result piextUSMEnqueueMemAdvise(pi_queue queue, const void *ptr,
 /// \param param_value is the result
 /// \param param_value_ret is how many bytes were written
 pi_result piextUSMGetMemAllocInfo(pi_context context, const void *ptr,
-                                  pi_mem_info param_name,
+                                  pi_mem_alloc_info param_name,
                                   size_t param_value_size, void *param_value,
                                   size_t *param_value_size_ret) {
 
@@ -1272,6 +1473,7 @@ pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_CL(piQueueCreate, piQueueCreate)
   _PI_CL(piQueueGetInfo, clGetCommandQueueInfo)
   _PI_CL(piQueueFinish, clFinish)
+  _PI_CL(piQueueFlush, clFlush)
   _PI_CL(piQueueRetain, clRetainCommandQueue)
   _PI_CL(piQueueRelease, clReleaseCommandQueue)
   _PI_CL(piextQueueGetNativeHandle, piextQueueGetNativeHandle)
@@ -1305,7 +1507,7 @@ pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_CL(piKernelCreate, piKernelCreate)
   _PI_CL(piKernelSetArg, clSetKernelArg)
   _PI_CL(piKernelGetInfo, clGetKernelInfo)
-  _PI_CL(piKernelGetGroupInfo, clGetKernelWorkGroupInfo)
+  _PI_CL(piKernelGetGroupInfo, piKernelGetGroupInfo)
   _PI_CL(piKernelGetSubGroupInfo, piKernelGetSubGroupInfo)
   _PI_CL(piKernelRetain, clRetainKernel)
   _PI_CL(piKernelRelease, clReleaseKernel)
@@ -1360,6 +1562,7 @@ pi_result piPluginInit(pi_plugin *PluginInit) {
 
   _PI_CL(piextKernelSetArgMemObj, piextKernelSetArgMemObj)
   _PI_CL(piextKernelSetArgSampler, piextKernelSetArgSampler)
+  _PI_CL(piPluginGetLastError, piPluginGetLastError)
   _PI_CL(piTearDown, piTearDown)
 
 #undef _PI_CL

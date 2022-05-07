@@ -17,14 +17,16 @@
 #include "clang/AST/AttrIterator.h"
 #include "clang/AST/Decl.h"
 #include "clang/AST/Expr.h"
+#include "clang/AST/ExprCXX.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/AttrKinds.h"
 #include "clang/Basic/AttributeCommonInfo.h"
-#include "clang/Basic/LangOptions.h"
 #include "clang/Basic/LLVM.h"
+#include "clang/Basic/LangOptions.h"
 #include "clang/Basic/OpenMPKinds.h"
 #include "clang/Basic/Sanitizers.h"
 #include "clang/Basic/SourceLocation.h"
+#include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/VersionTuple.h"
@@ -35,12 +37,7 @@
 namespace clang {
 class ASTContext;
 class AttributeCommonInfo;
-class IdentifierInfo;
-class ObjCInterfaceDecl;
-class Expr;
-class QualType;
 class FunctionDecl;
-class TypeSourceInfo;
 class OMPTraitInfo;
 
 /// Attr - This represents one attribute.
@@ -375,8 +372,7 @@ struct ParsedTargetAttr {
 
 inline const StreamingDiagnostic &operator<<(const StreamingDiagnostic &DB,
                                              const Attr *At) {
-  DB.AddTaggedVal(reinterpret_cast<intptr_t>(At),
-                  DiagnosticsEngine::ak_attr);
+  DB.AddTaggedVal(reinterpret_cast<uint64_t>(At), DiagnosticsEngine::ak_attr);
   return DB;
 }
 }  // end namespace clang

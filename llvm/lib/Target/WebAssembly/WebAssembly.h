@@ -25,9 +25,7 @@ class ModulePass;
 class FunctionPass;
 
 // LLVM IR passes.
-ModulePass *createWebAssemblyLowerEmscriptenEHSjLj(bool EnableEH,
-                                                   bool EnableSjLj);
-ModulePass *createWebAssemblyLowerGlobalDtors();
+ModulePass *createWebAssemblyLowerEmscriptenEHSjLj();
 ModulePass *createWebAssemblyAddMissingPrototypes();
 ModulePass *createWebAssemblyFixFunctionBitcasts();
 FunctionPass *createWebAssemblyOptimizeReturned();
@@ -57,12 +55,11 @@ FunctionPass *createWebAssemblyLowerBrUnless();
 FunctionPass *createWebAssemblyRegNumbering();
 FunctionPass *createWebAssemblyDebugFixup();
 FunctionPass *createWebAssemblyPeephole();
-FunctionPass *createWebAssemblyMCLowerPrePass();
+ModulePass *createWebAssemblyMCLowerPrePass();
 
 // PassRegistry initialization declarations.
 void initializeWebAssemblyAddMissingPrototypesPass(PassRegistry &);
 void initializeWebAssemblyLowerEmscriptenEHSjLjPass(PassRegistry &);
-void initializeLowerGlobalDtorsPass(PassRegistry &);
 void initializeFixFunctionBitcastsPass(PassRegistry &);
 void initializeOptimizeReturnedPass(PassRegistry &);
 void initializeWebAssemblyArgumentMovePass(PassRegistry &);

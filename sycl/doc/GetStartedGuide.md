@@ -9,8 +9,9 @@ and a wide range of compute accelerators such as GPU and FPGA.
   - [Build DPC++ toolchain](#build-dpc-toolchain)
     - [Build DPC++ toolchain with libc++ library](#build-dpc-toolchain-with-libc-library)
     - [Build DPC++ toolchain with support for NVIDIA CUDA](#build-dpc-toolchain-with-support-for-nvidia-cuda)
-    - [Build DPC++ toolchain with support for AMD ROCm](#build-dpc-toolchain-with-support-for-amd-rocm)
-    - [Build DPC++ toolchain with support for NVIDIA ROCm](#build-dpc-toolchain-with-support-for-nvidia-rocm)
+    - [Build DPC++ toolchain with support for HIP AMD](#build-dpc-toolchain-with-support-for-hip-amd)
+    - [Build DPC++ toolchain with support for HIP NVIDIA](#build-dpc-toolchain-with-support-for-hip-nvidia)
+    - [Build DPC++ toolchain with support for ESIMD CPU Emulation](#build-dpc-toolchain-with-support-for-esimd-emulator)
     - [Build Doxygen documentation](#build-doxygen-documentation)
     - [Deployment](#deployment)
   - [Use DPC++ toolchain](#use-dpc-toolchain)
@@ -29,7 +30,7 @@ and a wide range of compute accelerators such as GPU and FPGA.
   - [C++ standard](#c-standard)
   - [Known Issues and Limitations](#known-issues-and-limitations)
     - [CUDA back-end limitations](#cuda-back-end-limitations)
-    - [ROCm back-end limitations](#rocm-back-end-limitations)
+    - [HIP back-end limitations](#hip-back-end-limitations)
   - [Find More](#find-more)
 
 ## Prerequisites
@@ -44,6 +45,17 @@ and a wide range of compute accelerators such as GPU and FPGA.
     [Download](https://gcc.gnu.org/install/)
   * Windows: `Visual Studio` version 15.7 preview 4 or later -
     [Download](https://visualstudio.microsoft.com/downloads/)
+
+Alternatively, you can use Docker image, that has everything you need
+pre-installed:
+
+```
+docker run --name sycl_build -it -v /local/workspace/dir/:/src ghcr.io/intel/llvm/ubuntu2004_base /bin/bash
+```
+
+This command will start a terminal session, from which you can proceed with the
+instructions below. See [Docker BKMs](developer/DockerBKMs.md) for more info on Docker
+commands.
 
 ### Create DPC++ workspace
 
@@ -105,14 +117,22 @@ You can use the following flags with `configure.py` (full list of available
 flags can be found by launching the script with `--help`):
 
 * `--system-ocl` -> Don't download OpenCL headers and library via CMake but use the system ones
-* `--no-werror` -> Don't treat warnings as errors when compiling llvm
+* `--werror` -> treat warnings as errors when compiling LLVM
 * `--cuda` -> use the cuda backend (see [Nvidia CUDA](#build-dpc-toolchain-with-support-for-nvidia-cuda))
-* `--rocm` -> use the rocm backend (see [AMD ROCm](#build-dpc-toolchain-with-support-for-amd-rocm))
-* `--rocm-platform` -> select the platform used by the rocm backend, `AMD` or `NVIDIA` (see [AMD ROCm](#build-dpc-toolchain-with-support-for-amd-rocm) or see [NVIDIA ROCm](#build-dpc-toolchain-with-support-for-nvidia-rocm))
+* `--hip` -> use the HIP backend (see [HIP](#build-dpc-toolchain-with-support-for-hip-amd))
+* `--hip-platform` -> select the platform used by the hip backend, `AMD` or `NVIDIA` (see [HIP AMD](#build-dpc-toolchain-with-support-for-hip-amd) or see [HIP NVIDIA](#build-dpc-toolchain-with-support-for-hip-nvidia))
+* `--enable-esimd-emulator` -> enable ESIMD CPU emulation (see [ESIMD CPU emulation](#build-dpc-toolchain-with-support-for-esimd-cpu))
 * `--shared-libs` -> Build shared libraries
 * `-t` -> Build type (debug or release)
 * `-o` -> Path to build directory
 * `--cmake-gen` -> Set build system type (e.g. `--cmake-gen "Unix Makefiles"`)
+
+You can use the following flags with `compile.py` (full list of available flags
+can be found by launching the script with `--help`):
+
+* `-o` -> Path to build directory
+* `-t`, `--build-target` -> Build target (e.g., `clang` or `llvm-spirv`). Default is `deploy-sycl-toolchain`
+* `-j`, `--build-parallelism` -> Number of threads to use for compilation
 
 **Please note** that no data about flags is being shared between `configure.py` and
 `compile.py` scripts, which means that if you configured your build to be
@@ -146,65 +166,132 @@ python %DPCPP_HOME%\llvm\buildbot\compile.py
 
 There is experimental support for DPC++ for CUDA devices.
 
-To enable support for CUDA devices, follow the instructions for the Linux
-DPC++ toolchain, but add the `--cuda` flag to `configure.py`
+To enable support for CUDA devices, follow the instructions for the Linux or
+Windows DPC++ toolchain, but add the `--cuda` flag to `configure.py`. Note, 
+the CUDA backend has Windows support; windows subsystem for
+linux (WSL) is not needed to build and run the CUDA backend.
 
-Enabling this flag requires an installation of
+Enabling this flag requires an installation of at least
 [CUDA 10.2](https://developer.nvidia.com/cuda-10.2-download-archive) on
 the system, refer to
-[NVIDIA CUDA Installation Guide for Linux](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html).
+[NVIDIA CUDA Installation Guide for Linux](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html)
+or
+[NVIDIA CUDA Installation Guide for Windows](https://docs.nvidia.com/cuda/cuda-installation-guide-microsoft-windows/index.html)
 
-Currently, the only combination tested is Ubuntu 18.04 with CUDA 10.2 using
-a Titan RTX GPU (SM 71), but it should work on any GPU compatible with SM 50 or
-above. The default SM for the NVIDIA CUDA backend is 5.0. Users can specify
-lower values, but some features may not be supported.
+**_NOTE:_** An installation of at least
+[CUDA 11.6](https://developer.nvidia.com/cuda-downloads) is recommended because
+there is a known issue with some math builtins when using -O1/O2/O3
+Optimization options for CUDA toolkits prior to 11.6 (This is due to a bug in
+earlier versions of the CUDA toolkit: see
+[this issue](https://forums.developer.nvidia.com/t/libdevice-functions-causing-ptxas-segfault/193352)).
 
-### Build DPC++ toolchain with support for AMD ROCm
-There is experimental support for DPC++ for ROCm devices.
+An installation of at least
+[CUDA 11.0](https://developer.nvidia.com/cuda-11.0-download-archive)
+is required to fully utilize Turing (SM 75) devices and to enable Ampere (SM 80)
+core features.
 
-To enable support for ROCm devices, follow the instructions for the Linux
-DPC++ toolchain, but add the `--rocm` flag to `configure.py`
+The CUDA backend should work on Windows or Linux operating systems with any
+GPU compatible with SM 50 or above. The default SM for the NVIDIA CUDA backend
+is 5.0. Users can specify lower values, but some features may not be supported.
+
+**Non-standard CUDA location**
+
+If the CUDA toolkit is installed in a non-default location on your system, two considerations must be made.
+
+Firstly, **do not** add the toolkit to your standard environment variables (`PATH`, `LD_LIBRARY_PATH`), as to do so will create conflicts with OpenCL headers.
+
+Secondly, set the `CUDA_LIB_PATH` environment variable and pass the CMake variable `CUDA_TOOLKIT_ROOT_DIR` as follows:
+
+```
+CUDA_LIB_PATH=/path/to/cuda/toolkit/lib64/stubs CC=gcc CXX=g++ python $DPCPP_HOME/llvm/buildbot/configure.py --cuda --cmake-opt="-DCUDA_TOOLKIT_ROOT_DIR=/path/to/cuda/toolkit"
+
+CUDA_LIB_PATH=/path/to/cuda/toolkit/lib64/stubs CC=gcc CXX=g++ python $DPCPP_HOME/llvm/buildbot/compile.py
+
+$DPCPP_HOME/llvm/build/bin/clang++ -std=c++17 -O3 -fsycl -fsycl-targets=nvptx64-nvidia-cuda --cuda-path=/path/to/cuda/toolkit *.cpp -o a.out
+
+LD_LIBRARY_PATH=$LD_LIBRARY_PATH:$DPCPP_HOME/llvm/build/lib ./a.out
+```
+
+### Build DPC++ toolchain with support for HIP AMD
+
+There is experimental support for DPC++ for HIP on AMD devices. Note as this is
+still experimental and there is no continuous integration for this yet there
+are therefore no guarantees for supported platforms or configurations.
+
+To enable support for HIP devices, follow the instructions for the Linux
+DPC++ toolchain, but add the `--hip` flag to `configure.py`
 
 Enabling this flag requires an installation of
-ROCm 4.2.0 on the system, refer to
+ROCm on the system, for instruction on how to install this refer to
 [AMD ROCm Installation Guide for Linux](https://rocmdocs.amd.com/en/latest/Installation_Guide/Installation-Guide.html).
 
-Currently, the only combination tested is Ubuntu 18.04 with ROCm 4.2.0 using a Vega20 gfx906.
+Currently, this has only been tried on Linux, with ROCm 4.2.0 or 4.3.0 and
+using the MI50 (gfx906) and MI100 (gfx908) devices.
 
-[LLD](https://llvm.org/docs/AMDGPUUsage.html) is necessary for the AMD GPU compilation chain. 
-The AMDGPU backend generates a standard ELF [ELF] relocatable code object that can be linked by lld to 
-produce a standard ELF shared code object which can be loaded and executed on an AMDGPU target. 
-So if you want to support AMD ROCm, you should also build the lld project.
-[LLD Build Guide](https://lld.llvm.org/)
+[LLD](https://llvm.org/docs/AMDGPUUsage.html) is necessary for the AMDGPU compilation chain.
+The AMDGPU backend generates a standard ELF [ELF] relocatable code object that can be linked by lld to
+produce a standard ELF shared code object which can be loaded and executed on an AMDGPU target.
+The LLD project is enabled by default when configuring for HIP. For more details
+on building LLD refer to [LLD Build Guide](https://lld.llvm.org/).
 
 The following CMake variables can be updated to change where CMake is looking
-for the ROCm installation:
+for the HIP installation:
 
-* `SYCL_BUILD_PI_ROCM_INCLUDE_DIR`: Path to HIP include directory (default
+* `SYCL_BUILD_PI_HIP_INCLUDE_DIR`: Path to HIP include directory (default
   `/opt/rocm/hip/include`).
-* `SYCL_BUILD_PI_ROCM_HSA_INCLUDE_DIR`: Path to HSA include directory (default
+* `SYCL_BUILD_PI_HIP_HSA_INCLUDE_DIR`: Path to HSA include directory (default
   `/opt/rocm/hsa/include`).
-* `SYCL_BUILD_PI_ROCM_AMD_LIBRARY`: Path to HIP runtime library (default
+* `SYCL_BUILD_PI_HIP_AMD_LIBRARY`: Path to HIP runtime library (default
   `/opt/rocm/hip/lib/libamdhip64.so`).
 
-### Build DPC++ toolchain with support for NVIDIA ROCm
+### Build DPC++ toolchain with support for HIP NVIDIA
 
-There is experimental support for DPC++ for using ROCm on NVIDIA devices.
+There is experimental support for DPC++ for HIP on Nvidia devices. Note as this
+is still experimental and there is no continuous integration for this yet there
+are therefore no guarantees for supported platforms or configurations.
 
 This is a compatibility feature and the [CUDA backend](#build-dpc-toolchain-with-support-for-nvidia-cuda)
 should be preferred to run on NVIDIA GPUs.
 
-To enable support for NVIDIA ROCm devices, follow the instructions for the Linux
-DPC++ toolchain, but add the `--rocm` and `--rocm-platform NVIDIA` flags to
+To enable support for HIP NVIDIA devices, follow the instructions for the Linux
+DPC++ toolchain, but add the `--hip` and `--hip-platform NVIDIA` flags to
 `configure.py`.
 
-Enabling this flag requires ROCm to be installed, more specifically
+Enabling this flag requires HIP to be installed, more specifically
 [HIP NVCC](https://rocmdocs.amd.com/en/latest/Installation_Guide/HIP-Installation.html#nvidia-platform),
 as well as CUDA to be installed, see
 [NVIDIA CUDA Installation Guide for Linux](https://docs.nvidia.com/cuda/cuda-installation-guide-linux/index.html).
 
-Currently this was only tested on Linux with ROCm 4.2, CUDA 11 and a GeForce GTX
-1060 card.
+Currently, this has only been tried on Linux, with ROCm 4.2.0 or 4.3.0, with
+CUDA 11, and using a GeForce 1060 device.
+
+### Build DPC++ toolchain with support for ESIMD CPU Emulation
+
+There is experimental support for DPC++ for using ESIMD CPU Emulation
+
+This feature supports ESIMD CPU Emulation using CM_EMU library [CM
+Emulation project](https://github.com/intel/cm-cpu-emulation). The
+library package will be generated from source codes downloaded from
+its open source project and installed in your deploy directory during
+toolchain build.
+
+To enable support for ESIMD CPU emulation, follow the instructions for
+the Linux DPC++ toolchain, but add the `--enable-esimd-emulator'.
+
+Enabling this flag requires following packages installed.
+
+* Ubuntu 20.04
+    * libva-dev / 2.7.0-2
+    * libffi-dev / 3.3-4
+    * libtool
+* RHEL 8.*
+    * libffi
+    * libffi-devel
+    * libva
+    * libva-devel
+
+Currently, this feature was tested and verified on Ubuntu 20.04
+environment.
 
 ### Build Doxygen documentation
 
@@ -347,16 +434,16 @@ command:
 
     ```bash
     # Install OpenCL FPGA emulation RT
-    # Answer N to clean previous OCL_ICD_FILENAMES configuration
+    # Answer Y to clean previous OCL_ICD_FILENAMES configuration and ICD records cleanup
     c:\oclfpga_rt_<fpga_version>\install.bat c:\oneapi-tbb-<tbb_version>\redist\intel64\vc14
     # Install OpenCL CPU RT
-    # Answer Y to setup CPU RT side-bi-side with FPGA RT
+    # Answer N for ICD records cleanup
     c:\oclcpu_rt_<cpu_version>\install.bat c:\oneapi-tbb-<tbb_version>\redist\intel64\vc14
     ```
 
 ### Obtain prerequisites for ahead of time (AOT) compilation
 
-[Ahead of time compilation](CompilerAndRuntimeDesign.md#ahead-of-time-aot-compilation)
+[Ahead of time compilation](design/CompilerAndRuntimeDesign.md#ahead-of-time-aot-compilation)
 requires ahead of time compiler available in `PATH`. There is
 AOT compiler for each device type:
 
@@ -424,10 +511,10 @@ skipped.
 If CUDA support has been built, it is tested only if there are CUDA devices
 available.
 
-If testing with ROCm for AMD make sure to specify the GPU being used
-by adding `-Xsycl-target-backend=amdgcn-amd-amdhsa-sycldevice
---offload-arch=<target>` to the CMake variable
-`SYCL_CLANG_EXTRA_FLAGS`.
+If testing with HIP for AMD, the lit tests will use `gfx906` as the default
+architecture. It is possible to change it by adding
+`-Xsycl-target-backend=amdgcn-amd-amdhsa --offload-arch=<target>` to the CMake
+variable `SYCL_CLANG_EXTRA_FLAGS`.
 
 #### Run DPC++ E2E test suite
 
@@ -545,19 +632,19 @@ and run following command:
 clang++ -fsycl simple-sycl-app.cpp -o simple-sycl-app.exe
 ```
 
-When building for CUDA or NVIDIA ROCm, use the CUDA target triple as follows:
+When building for CUDA or HIP NVIDIA, use the CUDA target triple as follows:
 
 ```bash
-clang++ -fsycl -fsycl-targets=nvptx64-nvidia-cuda-sycldevice \
+clang++ -fsycl -fsycl-targets=nvptx64-nvidia-cuda \
   simple-sycl-app.cpp -o simple-sycl-app-cuda.exe
 ```
 
-When building for ROCm, use the ROCm target triple and specify the
+When building for HIP AMD, use the AMD target triple and specify the
 target architecture with `-Xsycl-target-backend --offload-arch=<arch>`
 as follows:
 
 ```bash
-clang++ -fsycl -fsycl-targets=amdgcn-amd-amdhsa-sycldevice \
+clang++ -fsycl -fsycl-targets=amdgcn-amd-amdhsa \
   -Xsycl-target-backend --offload-arch=gfx906              \
   simple-sycl-app.cpp -o simple-sycl-app-amd.exe
 ```
@@ -582,7 +669,7 @@ clang++ -fsycl -fsycl-targets=spir64_gen,spir64_x86_64 simple-sycl-app.cpp -o si
 
 Additionally, user can pass specific options of AOT compiler to
 the DPC++ compiler using ```-Xsycl-target-backend``` option, see
-[Device code formats](CompilerAndRuntimeDesign.md#device-code-formats) for
+[Device code formats](design/CompilerAndRuntimeDesign.md#device-code-formats) for
 more. To find available options, execute:
 
 ```ocloc compile --help``` for GPU,
@@ -594,8 +681,8 @@ execution, so SYCL runtime will use `default_selector` logic to select one
 of accelerators available in the system or SYCL host device.
 In this case, the behavior of the `default_selector` can be altered
 using the `SYCL_BE` environment variable, setting `PI_CUDA` forces
-the usage of the CUDA backend (if available), `PI_ROCM` forces
-the usage of the ROCm backend (if available), `PI_OPENCL` will
+the usage of the CUDA backend (if available), `PI_HIP` forces
+the usage of the HIP backend (if available), `PI_OPENCL` will
 force the usage of the OpenCL backend.
 
 ```bash
@@ -607,8 +694,8 @@ If there are no OpenCL or CUDA devices available, the SYCL host device is used.
 The SYCL host device executes the SYCL application directly in the host,
 without using any low-level API.
 
-**NOTE**: `nvptx64-nvidia-cuda-sycldevice` is usable with `-fsycl-targets`
-if clang was built with the cmake option `SYCL_BUILD_PI_CUDA=ON`.
+**NOTE**: `nvptx64-nvidia-cuda` is usable with `-fsycl-targets`
+if clang was built with the cmake option `SYCL_ENABLE_PLUGINS=cuda`.
 
 **Linux & Windows (64-bit)**:
 
@@ -627,7 +714,7 @@ SYCL_BE=PI_CUDA ./simple-sycl-app-cuda.exe
 
 **NOTE**: DPC++/SYCL developers can specify SYCL device for execution using
 device selectors (e.g. `cl::sycl::cpu_selector`, `cl::sycl::gpu_selector`,
-[Intel FPGA selector(s)](extensions/IntelFPGA/FPGASelector.md)) as
+[Intel FPGA selector(s)](extensions/supported/sycl_ext_intel_fpga_device_selector.md)) as
 explained in following section [Code the program for a specific
 GPU](#code-the-program-for-a-specific-gpu).
 
@@ -738,16 +825,37 @@ which contains all the symbols required.
   GPU (SM 71), but it should work on any GPU compatible with SM 50 or above
 * The NVIDIA OpenCL headers conflict with the OpenCL headers required for this
   project and may cause compilation issues on some platforms
+* `sycl::sqrt` is not correctly rounded by default as the SYCL specification
+  allows lower precision, when porting from CUDA it may be helpful to use
+  `-fsycl-fp32-prec-sqrt` to use the correctly rounded square root, this is
+  significantly slower but matches the default precision used by `nvcc`, and
+  this `clang++` flag is equivalent to the `nvcc` `-prec-sqrt` flag, except that
+  it defaults to `false`.
+* No Opt (O0) uses the IPSCCP compiler pass by default, although the IPSCCP pass
+  can be switched off at O0 using the `-mllvm -use-ipsccp-nvptx-O0=false` flag at
+  the user's discretion.
+  The reason that the IPSCCP pass is used by default even at O0 is that there is
+  currently an unresolved issue with the nvvm-reflect compiler pass: This pass is
+  used to pick the correct branches depending on the SM version which can be
+  optionally specified by the `--cuda-gpu-arch` flag.
+  If the arch flag is not specified by the user, the default value, SM 50, is used.
+  Without the execution of the IPSCCP pass at -O0 when using a low SM version,
+  dead instructions which require a higher SM version can remain. Since
+  corresponding issues occur in other backends future work will aim for a
+  universal solution to these issues.
 
-### ROCm back-end limitations
+### HIP back-end limitations
 
-* For supported Operating Systems, please refer to the [Supported Operating Systems](https://github.com/RadeonOpenCompute/ROCm#supported-operating-systems)
-* The only combination tested is Ubuntu 18.04 with ROCm 4.2 using a Vega20 gfx906.
-* Judging from the current [test](https://github.com/zjin-lcf/oneAPI-DirectProgramming) results, 
-  there is still a lot of room for improvement in ROCm back-end support. The current problems include three aspects. 
-  The first one is at compile time: the `barrier` and `atomic` keywords are not supported. 
-  The second is at runtime: when calling `hipMemcpyDtoHAsync` ROCm API, the program will cause an exception if the input data size is too large. 
-  The third is calculation accuracy: the ROCm backend has obvious errors in the calculation results of some float type operators
+* Requires a ROCm compatible operating system, for full details of supported
+  Operating System for ROCm, please refer to the
+  [ROCm Supported Operating Systems](https://github.com/RadeonOpenCompute/ROCm#supported-operating-systems).
+* Has only been tried with ROCm 4.2.0 and 4.3.0.
+* Has only been tested using the MI50 (gfx906) and MI100 (gfx908) devices.
+* Support is still experimental so not all of the tests are currently passing
+  and many of the built-in function are not yet implemented.
+* Additionally there is no continuous integration yet so no guarantee can be
+  made for support platforms or configurations
+* Global offsets are currently not supported.
 
 ## Find More
 

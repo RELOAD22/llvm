@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsycl-is-device -triple spir64-unknown-unknown-sycldevice -emit-llvm %s -o - | FileCheck %s
+// RUN: %clang_cc1 -fsycl-is-device -triple spir64-unknown-unknown -emit-llvm %s -o - | FileCheck %s
 
 // This test validates the behaviour of noalias parameter attribute.
 
@@ -20,7 +20,7 @@ int main() {
       accessorB;
 
   // Check that noalias parameter attribute is emitted when no_alias accessor property is used
-  // CHECK: define {{.*}}spir_kernel void @_ZTSZ4mainE16kernel_function1({{.*}} noalias {{.*}} %_arg_, {{.*}})
+  // CHECK: define {{.*}}spir_kernel void @_ZTSZ4mainE16kernel_function1({{.*}} noalias {{.*}} %_arg_accessorA, {{.*}})
   cl::sycl::kernel_single_task<class kernel_function1>(
       [=]() {
         accessorA.use();

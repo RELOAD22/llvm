@@ -8,7 +8,16 @@
 
 #pragma once
 
+#include <CL/sycl/builtins.hpp>
+#include <CL/sycl/detail/builtins.hpp>
+#include <CL/sycl/detail/generic_type_lists.hpp>
+#include <CL/sycl/detail/generic_type_traits.hpp>
+#include <CL/sycl/detail/type_traits.hpp>
+
 #include <CL/__spirv/spirv_ops.hpp>
+
+// TODO Decide whether to mark functions with this attribute.
+#define __NOEXC /*noexcept*/
 
 #ifdef __SYCL_DEVICE_ONLY__
 #define __SYCL_CONSTANT_AS __attribute__((opencl_constant))
@@ -40,9 +49,13 @@ namespace experimental {
 // executing program.
 //
 // - According to the OpenCL spec, the format string must reside in constant
-// address space. This requires to perform "tricky" declarations of them, see
-// test/built-ins/printf.cpp for examples
-// FIXME: this potentially can be done on SYCL FE side automatically
+// address space. The constant address space declarations might get "tricky",
+// see test/built-ins/printf.cpp for examples.
+// In simple cases (compile-time known string contents, direct declaration of
+// the format literal inside the printf call, etc.), the compiler should handle
+// the automatic address space conversion.
+// FIXME: Once the extension to generic address space is fully supported, the
+// constant AS version may need to be deprecated.
 //
 // - The format string is interpreted according to the OpenCL C spec, where all
 // data types has fixed size, opposed to C++ types which doesn't guarantee
@@ -59,8 +72,8 @@ namespace experimental {
 // guarded using __SYCL_DEVICE_ONLY__ preprocessor macro or avoided in favor
 // of more portable solutions if needed
 //
-template <typename... Args>
-int printf(const __SYCL_CONSTANT_AS char *__format, Args... args) {
+template <typename FormatT, typename... Args>
+int printf(const FormatT *__format, Args... args) {
 #if defined(__SYCL_DEVICE_ONLY__) && defined(__SPIR__)
   return __spirv_ocl_printf(__format, args...);
 #else
@@ -68,13 +81,46 @@ int printf(const __SYCL_CONSTANT_AS char *__format, Args... args) {
 #endif // defined(__SYCL_DEVICE_ONLY__) && defined(__SPIR__)
 }
 
+namespace native {
+
+// genfloatfh tanh (genfloatfh x)
+template <typename T>
+inline __SYCL_ALWAYS_INLINE
+    sycl::detail::enable_if_t<sycl::detail::is_genfloatf<T>::value ||
+                                  sycl::detail::is_genfloath<T>::value,
+                              T>
+    tanh(T x) __NOEXC {
+#if defined(__NVPTX__)
+  using _ocl_T = cl::sycl::detail::ConvertToOpenCLType_t<T>;
+  _ocl_T arg1 = cl::sycl::detail::convertDataToType<T, _ocl_T>(x);
+  return cl::sycl::detail::convertDataToType<_ocl_T, T>(
+      __clc_native_tanh(arg1));
+#else
+  return __sycl_std::__invoke_tanh<T>(x);
+#endif
+}
+
+// genfloath exp2 (genfloath x)
+template <typename T>
+inline __SYCL_ALWAYS_INLINE
+    sycl::detail::enable_if_t<sycl::detail::is_genfloath<T>::value, T>
+    exp2(T x) __NOEXC {
+#if defined(__NVPTX__)
+  using _ocl_T = cl::sycl::detail::ConvertToOpenCLType_t<T>;
+  _ocl_T arg1 = cl::sycl::detail::convertDataToType<T, _ocl_T>(x);
+  return cl::sycl::detail::convertDataToType<_ocl_T, T>(
+      __clc_native_exp2(arg1));
+#else
+  return __sycl_std::__invoke_exp2<T>(x);
+#endif
+}
+
+} // namespace native
+
 } // namespace experimental
 } // namespace oneapi
 } // namespace ext
 
-namespace __SYCL2020_DEPRECATED("use 'ext::oneapi' instead") ONEAPI {
-  using namespace ext::oneapi;
-}
 } // namespace sycl
 } // __SYCL_INLINE_NAMESPACE(cl)
 

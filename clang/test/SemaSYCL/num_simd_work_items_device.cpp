@@ -13,10 +13,11 @@ struct FuncObj {
   operator()() const {}
 };
 
+// expected-warning@+1 {{unknown attribute 'num_simd_work_items' ignored}}
+[[intelfpga::num_simd_work_items(22)]] void RemoveSpelling();
+
 struct FuncObj {
-  // expected-warning@+2 {{attribute 'intelfpga::num_simd_work_items' is deprecated}}
-  // expected-note@+1 {{did you mean to use 'intel::num_simd_work_items' instead?}}
-  [[intelfpga::num_simd_work_items(42)]] void
+  [[intel::num_simd_work_items(42)]] void
   operator()() const {}
 };
 
@@ -42,8 +43,8 @@ struct FuncObj {
 };
 
 #ifdef TRIGGER_ERROR
-// If the declaration has a [[intel::reqd_work_group_size]]
-// [[cl::reqd_work_group_size]] attribute, tests that check
+// If the declaration has a [[sycl::reqd_work_group_size]]
+// or [[cl::reqd_work_group_size]] attribute, tests that check
 // if the work group size attribute argument (the last argument)
 // can be evenly divided by the [[intel::num_simd_work_items()]] attribute.
 struct TRIFuncObjBad1 {
@@ -60,7 +61,7 @@ struct TRIFuncObjBad2 {
   operator()() const {}
 };
 
-// Tests for the default values of [[intel::reqd_work_group_size()]].
+// Tests for the default values of [[sycl::reqd_work_group_size()]].
 
 // FIXME: This should be accepted instead of error which turns out to be
 // an implementation bug that shouldn't be visible to the user as there
@@ -131,9 +132,7 @@ struct TRIFuncObjBad8 {
 [[intel::num_simd_work_items(2)]] // expected-error{{'num_simd_work_items' attribute must evenly divide the work-group size for the 'reqd_work_group_size' attribute}}
 [[sycl::reqd_work_group_size(4, 2, 3)]] void func1(); // expected-note{{conflicting attribute is here}}
 
-[[intel::reqd_work_group_size(4, 2, 3)]] // expected-note{{conflicting attribute is here}} \
-                                         // expected-warning {{attribute 'intel::reqd_work_group_size' is deprecated}} \
-                                         // expected-note {{did you mean to use 'sycl::reqd_work_group_size' instead?}}
+[[sycl::reqd_work_group_size(4, 2, 3)]]         // expected-note{{conflicting attribute is here}}
 [[intel::num_simd_work_items(2)]] void func2(); // expected-error{{'num_simd_work_items' attribute must evenly divide the work-group size for the 'reqd_work_group_size' attribute}}
 
 [[intel::num_simd_work_items(2)]] // expected-error{{'num_simd_work_items' attribute must evenly divide the work-group size for the 'reqd_work_group_size' attribute}}
@@ -175,43 +174,56 @@ struct TRIFuncObjBad12 {
 };
 
 struct TRIFuncObjBad13 {
-  [[sycl::reqd_work_group_size(0)]] // expected-error{{'reqd_work_group_size' attribute must be greater than 0}}
-  [[intel::num_simd_work_items(0)]]  // expected-error{{'num_simd_work_items' attribute requires a positive integral compile time constant expression}}
-  void operator()() const {}
+  [[sycl::reqd_work_group_size(0)]] // expected-error{{'reqd_work_group_size' attribute requires a positive integral compile time constant expression}}
+  [[intel::num_simd_work_items(0)]] // expected-error{{'num_simd_work_items' attribute requires a positive integral compile time constant expression}}
+  void
+  operator()() const {}
 };
 
 struct TRIFuncObjBad14 {
-  [[intel::num_simd_work_items(0)]]  // expected-error{{'num_simd_work_items' attribute requires a positive integral compile time constant expression}}
-  [[sycl::reqd_work_group_size(0)]] // expected-error{{'reqd_work_group_size' attribute must be greater than 0}}
+  [[intel::num_simd_work_items(3.f)]]  // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'float'}}
+  [[sycl::reqd_work_group_size(3.f)]] // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'float'}}
   void operator()() const {}
 };
 
 struct TRIFuncObjBad15 {
-  [[intel::num_simd_work_items(3.f)]]  // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'float'}}
   [[sycl::reqd_work_group_size(3.f)]] // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'float'}}
+  [[intel::num_simd_work_items(3.f)]]  // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'float'}}
   void operator()() const {}
 };
 
 struct TRIFuncObjBad16 {
-  [[sycl::reqd_work_group_size(3.f)]] // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'float'}}
-  [[intel::num_simd_work_items(3.f)]]  // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'float'}}
-  void operator()() const {}
-};
-
-struct TRIFuncObjBad17 {
   [[intel::num_simd_work_items(3)]]
   [[sycl::reqd_work_group_size(3, 3, 3.f)]] // expected-error{{integral constant expression must have integral or unscoped enumeration type, not 'float'}}
   void operator()() const {}
 };
 
-struct TRIFuncObjBad18 {
-  [[intel::num_simd_work_items(-1)]]  // expected-error{{'num_simd_work_items' attribute requires a positive integral compile time constant expression}}
-  [[sycl::reqd_work_group_size(-1)]] // expected-warning{{implicit conversion changes signedness: 'int' to 'unsigned long long'}}
-  void operator()() const {}
+struct TRIFuncObjBad17 {
+  [[intel::num_simd_work_items(-1)]] // expected-error{{'num_simd_work_items' attribute requires a positive integral compile time constant expression}}
+  [[sycl::reqd_work_group_size(-1)]] // expected-error{{'reqd_work_group_size' attribute requires a positive integral compile time constant expression}}
+  void
+  operator()() const {}
 };
 
+struct TRIFuncObjBad18 {
+  [[intel::num_simd_work_items(5)]] void // expected-error{{'num_simd_work_items' attribute must evenly divide the work-group size for the 'reqd_work_group_size' attribute}}
+  operator()() const;
+};
+
+[[sycl::reqd_work_group_size(10, 5, 9)]] // expected-note{{conflicting attribute is here}}
+void
+TRIFuncObjBad18::operator()() const {}
+
+struct TRIFuncObjBad19 {
+  [[sycl::reqd_work_group_size(10, 5, 9)]] void // expected-note{{conflicting attribute is here}}
+  operator()() const;
+};
+
+[[intel::num_simd_work_items(5)]] // expected-error{{'num_simd_work_items' attribute must evenly divide the work-group size for the 'reqd_work_group_size' attribute}}
+void
+TRIFuncObjBad19::operator()() const {}
 #endif // TRIGGER_ERROR
-// If the declaration has a [[intel::reqd_work_group_size()]]
+// If the declaration has a [[sycl::reqd_work_group_size()]]
 // or [[cl::reqd_work_group_size()]] or
 // __attribute__((reqd_work_group_size)) attribute, check to see
 // if the last argument can be evenly divided by the
@@ -240,6 +252,20 @@ struct TRIFuncObjGood4 {
   operator()() const {}
 };
 
+struct TRIFuncObjGood5 {
+  [[intel::num_simd_work_items(5)]] void
+  operator()() const;
+};
+
+[[sycl::reqd_work_group_size(3, 10, 5)]] void TRIFuncObjGood5::operator()() const {}
+
+struct TRIFuncObjGood6 {
+  [[sycl::reqd_work_group_size(3, 10, 5)]] void
+  operator()() const;
+};
+
+[[intel::num_simd_work_items(5)]] void TRIFuncObjGood6::operator()() const {}
+
 [[intel::num_simd_work_items(2)]]
 __attribute__((reqd_work_group_size(3, 2, 6))) void func6(); // expected-warning {{attribute 'reqd_work_group_size' is deprecated}} \
                                                                 expected-note {{did you mean to use '[[sycl::reqd_work_group_size]]' instead?}}
@@ -258,10 +284,8 @@ int main() {
     // CHECK-NEXT:  ConstantExpr {{.*}} 'int'
     // CHECK-NEXT:  value: Int 8
     // CHECK-NEXT:  IntegerLiteral{{.*}}8{{$}}
-    // expected-warning@+3 {{attribute 'intelfpga::num_simd_work_items' is deprecated}}
-    // expected-note@+2 {{did you mean to use 'intel::num_simd_work_items' instead?}}
     h.single_task<class test_kernel2>(
-        []() [[intelfpga::num_simd_work_items(8)]]{});
+        []() [[intel::num_simd_work_items(8)]]{});
 
     // CHECK-LABEL: FunctionDecl {{.*}}test_kernel3
     // CHECK:       SYCLIntelNumSimdWorkItemsAttr {{.*}}
@@ -385,9 +409,44 @@ int main() {
     h.single_task<class test_kernel27>(TRIFuncObjBad18());
 
     h.single_task<class test_kernel28>(
-        []() [[intel::num_simd_work_items(1), intel::num_simd_work_items(2)]]{}); // expected-warning{{attribute 'num_simd_work_items' is already applied with different arguments}} \
-                                                                                  // expected-note {{previous attribute is here}}
+        []() [[intel::num_simd_work_items(1), intel::num_simd_work_items(2)]] {}); // expected-warning{{attribute 'num_simd_work_items' is already applied with different arguments}}  // expected-note {{previous attribute is here}}
+
+    h.single_task<class test_kernel29>(TRIFuncObjBad19());
+
 #endif // TRIGGER_ERROR
+    h.single_task<class test_kernel30>(TRIFuncObjGood5());
+    // CHECK-LABEL: FunctionDecl {{.*}}test_kernel30
+    // CHECK:       SYCLIntelNumSimdWorkItemsAttr
+    // CHECK-NEXT:  ConstantExpr{{.*}}'int'
+    // CHECK-NEXT:  value: Int 5
+    // CHECK-NEXT:  IntegerLiteral{{.*}}5{{$}}
+    // CHECK:       ReqdWorkGroupSizeAttr
+    // CHECK-NEXT:  ConstantExpr{{.*}}'int'
+    // CHECK-NEXT:  value: Int 3
+    // CHECK-NEXT:  IntegerLiteral{{.*}}3{{$}}
+    // CHECK-NEXT:  ConstantExpr{{.*}}'int'
+    // CHECK-NEXT:  value: Int 10
+    // CHECK-NEXT:  IntegerLiteral{{.*}}10{{$}}
+    // CHECK-NEXT:  ConstantExpr{{.*}}'int'
+    // CHECK-NEXT:  value: Int 5
+    // CHECK-NEXT:  IntegerLiteral{{.*}}5{{$}}
+
+    h.single_task<class test_kernel31>(TRIFuncObjGood6());
+    // CHECK-LABEL: FunctionDecl {{.*}}test_kernel31
+    // CHECK:       ReqdWorkGroupSizeAttr
+    // CHECK-NEXT:  ConstantExpr{{.*}}'int'
+    // CHECK-NEXT:  value: Int 3
+    // CHECK-NEXT:  IntegerLiteral{{.*}}3{{$}}
+    // CHECK-NEXT:  ConstantExpr{{.*}}'int'
+    // CHECK-NEXT:  value: Int 10
+    // CHECK-NEXT:  IntegerLiteral{{.*}}10{{$}}
+    // CHECK-NEXT:  ConstantExpr{{.*}}'int'
+    // CHECK-NEXT:  value: Int 5
+    // CHECK-NEXT:  IntegerLiteral{{.*}}5{{$}}
+    // CHECK:       SYCLIntelNumSimdWorkItemsAttr
+    // CHECK-NEXT:  ConstantExpr{{.*}}'int'
+    // CHECK-NEXT:  value: Int 5
+    // CHECK-NEXT:  IntegerLiteral{{.*}}5{{$}}
   });
   return 0;
 }
