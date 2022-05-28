@@ -980,7 +980,16 @@ pi_result hip_piDeviceGetInfo(pi_device device, pi_device_info param_name,
                    PI_DEVICE_TYPE_GPU);
   }
   case PI_DEVICE_INFO_VENDOR_ID: {
-    return getInfo(param_value_size, param_value, param_value_size_ret, 4318u);
+#if defined(__HIP_PLATFORM_AMD__)
+    pi_uint32 vendor_id = 4098u;
+#elif defined(__HIP_PLATFORM_NVIDIA__)
+    pi_uint32 vendor_id = 4318u;
+#else
+    pi_uint32 vendor_id = 0u;
+#endif
+
+    return getInfo(param_value_size, param_value, param_value_size_ret,
+                   vendor_id);
   }
   case PI_DEVICE_INFO_MAX_COMPUTE_UNITS: {
     int compute_units = 0;
@@ -2310,10 +2319,12 @@ pi_result hip_piextQueueGetNativeHandle(pi_queue queue,
 /// \return TBD
 pi_result hip_piextQueueCreateWithNativeHandle(pi_native_handle nativeHandle,
                                                pi_context context,
-                                               pi_queue *queue,
-                                               bool ownNativeHandle) {
+                                               pi_device device,
+                                               bool ownNativeHandle,
+                                               pi_queue *queue) {
   (void)nativeHandle;
   (void)context;
+  (void)device;
   (void)queue;
   (void)ownNativeHandle;
   cl::sycl::detail::pi::die(
@@ -3373,6 +3384,15 @@ pi_result hip_piKernelSetExecInfo(pi_kernel kernel,
   (void)param_value;
 
   return PI_SUCCESS;
+}
+
+pi_result hip_piextProgramSetSpecializationConstant(pi_program, pi_uint32,
+                                                    size_t, const void *) {
+  // This entry point is only used for native specialization constants (SPIR-V),
+  // and the HIP plugin is AOT only so this entry point is not supported.
+  cl::sycl::detail::pi::die(
+      "Native specialization constants are not supported");
+  return {};
 }
 
 pi_result hip_piextKernelSetArgPointer(pi_kernel kernel, pi_uint32 arg_index,
@@ -4883,7 +4903,10 @@ pi_result piPluginInit(pi_plugin *PluginInit) {
   }
 
   // PI interface supports higher version or the same version.
-  strncpy(PluginInit->PluginVersion, SupportedVersion, 4);
+  size_t PluginVersionSize = sizeof(PluginInit->PluginVersion);
+  if (strlen(SupportedVersion) >= PluginVersionSize)
+    return PI_INVALID_VALUE;
+  strncpy(PluginInit->PluginVersion, SupportedVersion, PluginVersionSize);
 
   // Set whole function table to zero to make it easier to detect if
   // functions are not set up below.
@@ -4959,6 +4982,8 @@ pi_result piPluginInit(pi_plugin *PluginInit) {
   _PI_CL(piKernelRetain, hip_piKernelRetain)
   _PI_CL(piKernelRelease, hip_piKernelRelease)
   _PI_CL(piKernelSetExecInfo, hip_piKernelSetExecInfo)
+  _PI_CL(piextProgramSetSpecializationConstant,
+         hip_piextProgramSetSpecializationConstant)
   _PI_CL(piextKernelSetArgPointer, hip_piextKernelSetArgPointer)
   // Event
   _PI_CL(piEventCreate, hip_piEventCreate)
